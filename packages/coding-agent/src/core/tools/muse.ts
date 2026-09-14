@@ -384,8 +384,9 @@ function isNoticeLine(line: string): boolean {
 }
 
 function formatReadFileResult(path: string, startLine: number, text: string): string {
+	const trimmed = text.endsWith("\n") ? text.slice(0, -1) : text;
 	let n = startLine;
-	const numbered = text.split("\n").map((line) => {
+	const numbered = trimmed.split("\n").map((line) => {
 		if (isNoticeLine(line)) return line;
 		const value = `${n}|${line}`;
 		n += 1;
