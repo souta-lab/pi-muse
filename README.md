@@ -46,9 +46,36 @@ Two deliberate deviations:
 1. **Plain tool names.** Muse ships its tools inside a Responses `namespace` group and
    addresses them as `muse.read_file`; Pi has no namespace tool type, and OpenAI-style
    function names cannot contain `.`, so the prompt is rewritten to the plain names.
-2. **The prompt is static.** Muse appends per-session context (workspace root, permission
-   mode) in a separate `developer` message; `pi-muse` appends an equivalent
-   `<system-reminder source="workspace-identity">` block instead.
+2. **Per-session context transport.** Muse delivers the workspace root, permission mode,
+   delegation posture, and skill catalog in a separate `developer` message; `pi-muse`
+   appends the same content to the system prompt because Pi has no `developer` role.
+
+### Fidelity at a glance
+
+These are estimates, not measured values.
+
+| Scope | Fidelity |
+|---|---|
+| Model-visible surface (system prompt + tool schemas) | ~95% |
+| Tool behavior (result wording, errors, flag surface) | ~90% |
+| Per-session context injection | ~90% |
+| End-to-end harness behavior (approvals, sandbox, event log/resume, reminders, multi-agent) | ~15% |
+| **Overall** | **~70%** |
+
+## Testing fidelity
+
+- `./test.sh` runs the non-e2e suite. `packages/coding-agent/test/muse-tools.test.ts`
+  exercises every Muse tool (result wording, error paths, session handling), and
+  `test/muse.test.ts` covers the prompt, providers, bash sessions, memory, and the
+  ripgrep flag mapping.
+- **Differential check against the real CLI:** run the same prompt through Muse Code and
+  `pi-muse`, both on `muse-spark-1.3-contributor`, then compare the tool-call sequence and
+  result wording. A `write_file` → `read_file` task matches, including the
+  ``wrote N bytes to <path>`` and ``Read text file `path`.\n1|…`` result texts.
+- **Wire parity:** the captured Muse Code request (system prompt + tool schemas) is
+  mirrored at https://github.com/souta-lab/muse-code-system-prompt, and pi-muse's
+  outgoing request can be captured the same way to diff `instructions`, `tools`, and the
+  request parameters (`reasoning`, `include`, `store`, `max_output_tokens`).
 
 ## What is different from upstream Pi
 
