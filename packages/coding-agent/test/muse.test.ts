@@ -51,6 +51,9 @@ describe("muse tools", () => {
 			"search",
 			"bash",
 			"bash_input",
+			"read_memory",
+			"add_memory",
+			"edit_memory",
 			"write_todos",
 		]);
 	});
@@ -185,12 +188,12 @@ describe("muse bash sessions", () => {
 			ctx(cwd),
 		);
 		const startedText = (started.content[0] as { text: string }).text;
-		const sessionId = startedText.match(/session_id: ([0-9a-f-]+)/)?.[1];
+		const sessionId = startedText.match(/session_id: (\d+)/)?.[1];
 		expect(sessionId).toBeTruthy();
 
 		const sent = await definitions.bash_input.execute(
 			"bash-pty-in",
-			{ session_id: sessionId!, input: "hello-pty\n" },
+			{ session_id: Number(sessionId), chars: "hello-pty\n" },
 			undefined,
 			undefined,
 			ctx(cwd),
@@ -199,7 +202,7 @@ describe("muse bash sessions", () => {
 
 		const stopped = await definitions.bash_input.execute(
 			"bash-pty-stop",
-			{ session_id: sessionId!, terminate: true },
+			{ session_id: Number(sessionId), terminate: true },
 			undefined,
 			undefined,
 			ctx(cwd),
@@ -210,7 +213,7 @@ describe("muse bash sessions", () => {
 	it("delivers the terminal result to an exit listener", async () => {
 		const cwd = makeTempDir();
 		const definitions = createMuseToolDefinitions(cwd);
-		const exits: Array<{ sessionId: string; exitCode: number | null }> = [];
+		const exits: Array<{ sessionId: number; exitCode: number | null }> = [];
 		const unsubscribe = onShellSessionExit((event) =>
 			exits.push({ sessionId: event.sessionId, exitCode: event.exitCode }),
 		);
@@ -223,12 +226,77 @@ describe("muse bash sessions", () => {
 				undefined,
 				ctx(cwd),
 			);
-			const sessionId = (started.content[0] as { text: string }).text.match(/session_id: ([0-9a-f-]+)/)?.[1];
+			const sessionId = Number((started.content[0] as { text: string }).text.match(/session_id: (\d+)/)?.[1]);
 			expect(sessionId).toBeTruthy();
 			await new Promise((resolve) => setTimeout(resolve, 2000));
 			expect(exits.some((event) => event.sessionId === sessionId && event.exitCode === 0)).toBe(true);
 		} finally {
 			unsubscribe();
+		}
+	});
+});
+
+describe("muse memory", () => {
+	it("adds, reads, and edits a memory file", async () => {
+		const agentDir = makeTempDir();
+		const previous = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		try {
+			const definitions = createMuseToolDefinitions(agentDir);
+			await definitions.add_memory.execute(
+				"m1",
+				{ path: "notes.md", content: "hello" },
+				undefined,
+				undefined,
+				ctx(agentDir),
+			);
+			await definitions.add_memory.execute(
+				"m2",
+				{ path: "notes.md", content: "world" },
+				undefined,
+				undefined,
+				ctx(agentDir),
+			);
+
+			const first = await definitions.read_memory.execute(
+				"m3",
+				{ path: "notes.md" },
+				undefined,
+				undefined,
+				ctx(agentDir),
+			);
+			const firstText = (first.content[0] as { text: string }).text;
+			expect(firstText).toContain("hello");
+			expect(firstText).toContain("world");
+
+			await definitions.edit_memory.execute(
+				"m4",
+				{ path: "notes.md", old_str: "hello", new_str: "hi" },
+				undefined,
+				undefined,
+				ctx(agentDir),
+			);
+			const second = await definitions.read_memory.execute(
+				"m5",
+				{ path: "notes.md" },
+				undefined,
+				undefined,
+				ctx(agentDir),
+			);
+			expect((second.content[0] as { text: string }).text).toContain("hi");
+
+			await expect(
+				definitions.edit_memory.execute(
+					"m6",
+					{ path: "notes.md", old_str: "not-present", new_str: "x" },
+					undefined,
+					undefined,
+					ctx(agentDir),
+				),
+			).rejects.toThrow();
+		} finally {
+			if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previous;
 		}
 	});
 });

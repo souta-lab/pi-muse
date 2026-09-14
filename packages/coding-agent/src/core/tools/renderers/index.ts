@@ -44,6 +44,9 @@ export function createAllToolRenderers(): Record<ToolName, ToolRenderers> {
 		edit_file: {},
 		search: grepRenderers,
 		bash_input: {},
+		read_memory: {},
+		add_memory: {},
+		edit_memory: {},
 		write_todos: {},
 	};
 }

@@ -796,7 +796,20 @@ export async function main(args: string[], options?: MainOptions) {
 				noContextFiles: parsed.noContextFiles,
 				systemPrompt: parsed.systemPrompt,
 				defaultSystemPrompt: MUSE_SYSTEM_PROMPT,
-				appendSystemPrompt: parsed.appendSystemPrompt,
+				appendSystemPrompt: [
+					...(parsed.appendSystemPrompt ?? []),
+					[
+						`<system-reminder source="workspace-identity">`,
+						`Workspace root: ${cwd}`,
+						`Workspace-relative tool paths resolve against this root.`,
+						`</system-reminder>`,
+						``,
+						`Session permission mode (as of session start):`,
+						`- Approval: pi-muse has no approval gate; tool calls never prompt for approval.`,
+						`- Shell sandbox: off — shell commands run unsandboxed.`,
+						`- Workspace trust: ${projectTrusted ? "trusted" : "untrusted"} — project instructions, skills, and hooks ${projectTrusted ? "are" : "are not"} eligible to load.`,
+					].join("\n"),
+				],
 				extensionFactories,
 			},
 		});

@@ -108,11 +108,14 @@ import { createFindTool, createFindToolDefinition, type FindToolOptions } from "
 import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
 import {
+	createAddMemoryToolDefinition,
 	createBashInputToolDefinition,
 	createEditFileToolDefinition,
+	createEditMemoryToolDefinition,
 	createMuseBashToolDefinition,
 	createMuseToolDefinitions,
 	createReadFileToolDefinition,
+	createReadMemoryToolDefinition,
 	createSearchToolDefinition,
 	createWriteFileToolDefinition,
 	createWriteTodosToolDefinition,
@@ -138,6 +141,9 @@ export type ToolName =
 	| "edit_file"
 	| "search"
 	| "bash_input"
+	| "read_memory"
+	| "add_memory"
+	| "edit_memory"
 	| "write_todos";
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
@@ -153,6 +159,9 @@ export const allToolNames: Set<ToolName> = new Set([
 	"edit_file",
 	"search",
 	"bash_input",
+	"read_memory",
+	"add_memory",
+	"edit_memory",
 	"write_todos",
 ]);
 
@@ -195,6 +204,12 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createSearchToolDefinition(cwd, options?.grep);
 		case "bash_input":
 			return createBashInputToolDefinition();
+		case "read_memory":
+			return createReadMemoryToolDefinition();
+		case "add_memory":
+			return createAddMemoryToolDefinition();
+		case "edit_memory":
+			return createEditMemoryToolDefinition();
 		case "write_todos":
 			return createWriteTodosToolDefinition();
 		default:
@@ -230,6 +245,12 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return wrapToolDefinition(createSearchToolDefinition(cwd, options?.grep));
 		case "bash_input":
 			return wrapToolDefinition(createBashInputToolDefinition());
+		case "read_memory":
+			return wrapToolDefinition(createReadMemoryToolDefinition());
+		case "add_memory":
+			return wrapToolDefinition(createAddMemoryToolDefinition());
+		case "edit_memory":
+			return wrapToolDefinition(createEditMemoryToolDefinition());
 		case "write_todos":
 			return wrapToolDefinition(createWriteTodosToolDefinition());
 		default:
@@ -306,6 +327,9 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		search: wrapToolDefinition(createSearchToolDefinition(cwd, options?.grep)),
 		bash: wrapToolDefinition(createMuseBashToolDefinition(cwd)),
 		bash_input: wrapToolDefinition(createBashInputToolDefinition()),
+		read_memory: wrapToolDefinition(createReadMemoryToolDefinition()),
+		add_memory: wrapToolDefinition(createAddMemoryToolDefinition()),
+		edit_memory: wrapToolDefinition(createEditMemoryToolDefinition()),
 		write_todos: wrapToolDefinition(createWriteTodosToolDefinition()),
 	};
 }

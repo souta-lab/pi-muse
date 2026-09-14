@@ -28,7 +28,7 @@ describe("strict built-in tools", () => {
 		}
 		// Strictness is a provider-side conversion, not a change to the execution schema.
 		expect(definitions.read.parameters.required).toEqual(["path"]);
-		expect(definitions.bash.parameters.required).toEqual(["command"]);
+		expect(definitions.bash.parameters.required).toEqual(["command", "description"]);
 	});
 
 	it("preserves explicit opt-outs when wrapping definitions for execution", () => {

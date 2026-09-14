@@ -1,8 +1,9 @@
 /**
  * Default system prompt for pi-muse.
  *
- * Extracted from the Muse Code CLI binary 1.2.1 (embedded prompt region);
- * `{{tool:name}}` placeholders are resolved to the concrete pi-muse tool names.
+ * Captured from a live Muse Code 1.2.1 Responses request (muse-spark-1.3-contributor)
+ * via muse-shim. `muse.<tool>` namespace references were rewritten to the plain tool
+ * names pi-muse exposes, since pi has no namespace tool type.
  * Source mirror: https://github.com/souta-lab/muse-code-system-prompt
  */
 
@@ -118,5 +119,4 @@ Use the instructions below and the tools available to assist the user.
 - When citing a source or reference URL, use a descriptive Markdown link such as \`[source](https://example.com)\`. Preserve the exact URL you actually obtained.
 - Before sending, check the final answer against the user's current request and make sure every part is answered.
 - Before the final response, compare the verification commands you actually ran against every gate named by project configuration and run each missing exact gate now. Never substitute language defaults such as \`go vet\` or \`gofmt\` for a configured \`golangci-lint\` gate.
-- End with a short final message in plain text, not a tool call. Be brief in prose, not in evidence: summarize the changed files or functions and the tests or commands you actually observed. Do not claim a success that you did not verify.
-meta.instructions`;
+- End with a short final message in plain text, not a tool call. Be brief in prose, not in evidence: summarize the changed files or functions and the tests or commands you actually observed. Do not claim a success that you did not verify.`;
