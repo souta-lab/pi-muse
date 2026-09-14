@@ -99,6 +99,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
+import { buildMuseDeveloperContext } from "./muse-context.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import { exportSessionToJsonl } from "./session-export.ts";
@@ -1084,7 +1085,7 @@ export class AgentSession {
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
-			skills: loadedSkills,
+			skills: [],
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
@@ -1092,7 +1093,14 @@ export class AgentSession {
 			toolSnippets,
 			promptGuidelines,
 		};
-		return buildSystemPrompt(this._baseSystemPromptOptions);
+		const basePrompt = buildSystemPrompt(this._baseSystemPromptOptions);
+		const developerContext = buildMuseDeveloperContext({
+			cwd: this._cwd,
+			trusted: this.settingsManager.isProjectTrusted(),
+			skills: loadedSkills,
+			subagentsAvailable: this._toolRegistry.has("subagent_spawn"),
+		});
+		return developerContext ? `${basePrompt}\n\n${developerContext}` : basePrompt;
 	}
 
 	// =========================================================================
