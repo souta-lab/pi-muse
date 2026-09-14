@@ -64,6 +64,7 @@ import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { MUSE_TOOL_NAMES } from "./core/tools/muse.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
+import { MUSE_DEFAULT_MODEL_ID, MUSE_PROVIDER_ID, OPENCODE_GO_PROVIDER_ID } from "./extensions/muse.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
@@ -509,11 +510,29 @@ function buildSessionOptions(
 		}
 	}
 
+	if (!options.model && scopedModels.length === 0 && !hasExistingSession) {
+		const savedProvider = settingsManager.getDefaultProvider();
+		const savedModelId = settingsManager.getDefaultModel();
+		if (!savedProvider && !savedModelId) {
+			for (const provider of [MUSE_PROVIDER_ID, OPENCODE_GO_PROVIDER_ID]) {
+				if (!modelRuntime.hasConfiguredAuth(provider)) continue;
+				const contributor = resolveCliModel({
+					cliProvider: provider,
+					cliModel: MUSE_DEFAULT_MODEL_ID,
+					modelRuntime,
+				});
+				if (contributor.model) {
+					options.model = contributor.model;
+					break;
+				}
+			}
+		}
+	}
+
 	// Thinking level from CLI (takes precedence over scoped model thinking levels set above)
 	if (parsed.thinking) {
 		options.thinkingLevel = parsed.thinking;
 	}
-
 	// Scoped models for Ctrl+P cycling
 	// Keep thinking level undefined when not explicitly set in the model pattern.
 	// Undefined means "inherit current session thinking level" during cycling.

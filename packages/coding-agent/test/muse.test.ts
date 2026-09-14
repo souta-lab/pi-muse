@@ -280,7 +280,7 @@ describe("muse provider", () => {
 		};
 		expect(config.baseUrl).toBe("https://api.meta.ai/v1");
 		expect(config.api).toBe("openai-responses");
-		expect(config.models.map((model) => model.id)).toContain("muse-spark-1.3");
+		expect(config.models.map((model) => model.id)).toContain("muse-spark-1.3-contributor");
 		expect(config.models.every((model) => model.reasoning)).toBe(true);
 
 		const opencodeGo = registered[1].config as {

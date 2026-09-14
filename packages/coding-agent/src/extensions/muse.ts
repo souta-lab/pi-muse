@@ -4,6 +4,7 @@ import { onShellSessionExit } from "../core/tools/muse.ts";
 
 export const MUSE_PROVIDER_ID = "muse";
 export const OPENCODE_GO_PROVIDER_ID = "opencode-go";
+export const MUSE_DEFAULT_MODEL_ID = "muse-spark-1.3-contributor";
 
 /**
  * Meta Model API is OpenAI-compatible. The Responses API carries Muse Spark's
@@ -18,15 +19,73 @@ const MUSE_BASE_URL = "https://api.meta.ai/v1";
  */
 const OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1";
 
-const MUSE_MODELS = [
-	{ id: "muse-spark-1.3", name: "Muse Spark 1.3" },
-	{ id: "muse-spark-1.2", name: "Muse Spark 1.2" },
+interface MuseModelSpec {
+	id: string;
+	name: string;
+	contextWindow: number;
+	maxTokens: number;
+	supportsMax: boolean;
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+}
+
+const MUSE_MODELS: MuseModelSpec[] = [
+	{
+		id: "muse-spark-1.3-contributor",
+		name: "Muse Spark 1.3 Contributor",
+		contextWindow: 1_007_997,
+		maxTokens: 128_000,
+		supportsMax: true,
+		cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
+	},
+	{
+		id: "muse-spark-1.2-contributor",
+		name: "Muse Spark 1.2 Contributor",
+		contextWindow: 1_007_997,
+		maxTokens: 128_000,
+		supportsMax: false,
+		cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
+	},
 ];
 
-const OPENCODE_GO_MODELS = [
-	{ id: "muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor" },
-	{ id: "muse-spark-1.2-contributor", name: "Muse Spark 1.2 Contributor" },
+const OPENCODE_GO_MODELS: MuseModelSpec[] = [
+	{
+		id: "muse-spark-1.3-contributor",
+		name: "Muse Spark 1.3 Contributor",
+		contextWindow: 1_048_576,
+		maxTokens: 131_072,
+		supportsMax: true,
+		cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
+	},
+	{
+		id: "muse-spark-1.2-contributor",
+		name: "Muse Spark 1.2 Contributor",
+		contextWindow: 1_048_576,
+		maxTokens: 131_072,
+		supportsMax: false,
+		cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
+	},
 ];
+
+function toProviderModels(models: MuseModelSpec[], supportsImages: boolean) {
+	return models.map((model) => ({
+		id: model.id,
+		name: model.name,
+		reasoning: true,
+		input: (supportsImages ? ["text", "image"] : ["text"]) as ("text" | "image")[],
+		thinkingLevelMap: {
+			off: null,
+			minimal: "minimal",
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: model.supportsMax ? "max" : null,
+		},
+		cost: model.cost,
+		contextWindow: model.contextWindow,
+		maxTokens: model.maxTokens,
+	}));
+}
 
 export default function museExtension(pi: ExtensionAPI): void {
 	pi.registerProvider(MUSE_PROVIDER_ID, {
@@ -34,16 +93,7 @@ export default function museExtension(pi: ExtensionAPI): void {
 		baseUrl: MUSE_BASE_URL,
 		apiKey: "$META_API_KEY",
 		api: "openai-responses",
-		models: MUSE_MODELS.map((model) => ({
-			id: model.id,
-			name: model.name,
-			reasoning: true,
-			input: ["text", "image"] as ("text" | "image")[],
-			thinkingLevelMap: { off: null },
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 1_048_576,
-			maxTokens: 131_072,
-		})),
+		models: toProviderModels(MUSE_MODELS, true),
 	});
 
 	pi.registerProvider(OPENCODE_GO_PROVIDER_ID, {
@@ -52,16 +102,7 @@ export default function museExtension(pi: ExtensionAPI): void {
 		apiKey: "$OPENCODE_GO_API_KEY",
 		api: "openai-responses",
 		headers: { "x-opencode-session": `pi-muse-${randomUUID()}` },
-		models: OPENCODE_GO_MODELS.map((model) => ({
-			id: model.id,
-			name: model.name,
-			reasoning: true,
-			input: ["text"] as ("text" | "image")[],
-			thinkingLevelMap: { off: null },
-			cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
-			contextWindow: 1_048_576,
-			maxTokens: 131_072,
-		})),
+		models: toProviderModels(OPENCODE_GO_MODELS, false),
 	});
 
 	onShellSessionExit(({ sessionId, output, exitCode, signal }) => {

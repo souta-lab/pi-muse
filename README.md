@@ -32,11 +32,14 @@ by Meta.)*
     a follow-up message and wakes it (this applies while a session is active;
     `-p`/headless exits once the agent is idle).
   - `read_file` defaults to 500 lines.
-- A built-in `muse` provider targets Meta Model API (`muse-spark-1.3`, Responses API).
+- A built-in `muse` provider targets Meta Model API (`muse-spark-1.3-contributor`,
+  Responses API).
 - A built-in `opencode-go` provider runs Muse Spark through the OpenCode Go gateway
   (`muse-spark-1.3-contributor` / `muse-spark-1.2-contributor`). Muse is routed over
   the Responses API there and the gateway requires an `x-opencode-session` header,
   both of which this provider sets for you.
+- Only the cheaper Contributor tier models are registered, and `pi-muse` defaults to
+  `muse-spark-1.3-contributor` when no model is chosen.
 - Pi's standard tools (`read`, `write`, `edit`, `grep`, `find`) stay in the registry
   but are not exposed by default.
 
@@ -48,7 +51,7 @@ npm run build
 
 # Meta Model API
 export META_API_KEY=...
-pi-muse --provider muse --model muse-spark-1.3
+pi-muse --provider muse --model muse-spark-1.3-contributor
 
 # or OpenCode Go
 export OPENCODE_GO_API_KEY=...
@@ -57,7 +60,7 @@ pi-muse --provider opencode-go --model muse-spark-1.3-contributor
 
 Install the binary first with `npm link -w @earendil-works/pi-coding-agent`, or run
 the bundled CLI directly with
-`node packages/coding-agent/dist/bundle/cli.js --provider muse --model muse-spark-1.3`.
+`node packages/coding-agent/dist/bundle/cli.js --provider muse --model muse-spark-1.3-contributor`.
 
 ## License and attribution
 
