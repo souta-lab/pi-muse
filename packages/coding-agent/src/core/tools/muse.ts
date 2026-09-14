@@ -978,7 +978,7 @@ export function createWriteTodosToolDefinition(): ToolDefinition<typeof writeTod
 		promptGuidelines: ["Use write_todos for genuinely multi-step work; mark a todo completed as soon as it is done"],
 		parameters: writeTodosSchema,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
-		execute(_toolCallId, input) {
+		async execute(_toolCallId, input) {
 			if (input.todos.filter((todo) => todo.status === "in_progress").length > 1) {
 				throw new Error("write_todos: keep at most one todo in_progress");
 			}
