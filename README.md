@@ -16,41 +16,65 @@ OpenRouter) without depending on Meta's closed CLI.
 *(The "benchmaxxed"/lock-in framing is the maintainer's motivation, not a statement
 by Meta.)*
 
+## Muse Code fidelity
+
+The harness interface is captured from a live Muse Code 1.2.1 session (model
+`muse-spark-1.3-contributor`) rather than reconstructed from docs:
+
+- **System prompt** — the exact runtime `instructions` (40,445 chars). Captured copy:
+  https://github.com/souta-lab/muse-code-system-prompt
+- **Tool schemas** — taken from the captured Responses request, where Muse sends one
+  `namespace` tool group named `muse` containing 22 function tools. The seven tools the
+  prompt references match the official descriptions, argument names, and constraints.
+
+| Area | Status |
+|---|---|
+| Runtime system prompt | Captured verbatim |
+| `read_file`, `write_file`, `edit_file`, `write_todos` | Exact schemas |
+| `bash`, `bash_input` | Exact schemas (`yield_time_ms`, PTY, integer session id, `chars`) |
+| `search` | Official argument surface, mapped onto ripgrep (a few flags are accepted but not honored) |
+| `read_memory`, `add_memory`, `edit_memory` | Native, official schemas |
+| `read_skill`, `work_status`, `work_stop`, `web_search` | Native |
+| `subagent_*` | Bridged to `@tintinweb/pi-subagents` when installed (5 of 6; `subagent_send_message` is not exposed over its RPC) |
+| `workflow`, `snooze_reminder` | Not implemented |
+| Approvals, OS sandbox, event-sourced log/resume, skills/hooks/MCP/plugins | Not implemented (out of scope) |
+
+Two deliberate deviations:
+
+1. **Plain tool names.** Muse ships its tools inside a Responses `namespace` group and
+   addresses them as `muse.read_file`; Pi has no namespace tool type, and OpenAI-style
+   function names cannot contain `.`, so the prompt is rewritten to the plain names.
+2. **The prompt is static.** Muse appends per-session context (workspace root, permission
+   mode) in a separate `developer` message; `pi-muse` appends an equivalent
+   `<system-reminder source="workspace-identity">` block instead.
+
 ## What is different from upstream Pi
 
 - The CLI binary is renamed to `pi-muse` (`packages/coding-agent/package.json`, `bin`).
-- The default system prompt is replaced with the Muse Code prompt
-  (`src/core/muse-system-prompt.ts`). It is applied only for the CLI through
+- The default system prompt is the captured Muse Code prompt
+  (`src/core/muse-system-prompt.ts`), applied only for the CLI through
   `defaultSystemPrompt`, so SDK callers keep Pi's built-in prompt.
-- The model sees only Muse Code's tool set: `read_file`, `write_file`, `edit_file`,
-  `search`, `bash`, `bash_input`, `write_todos`.
+- The model sees Muse Code's tool set (**14 built-in**): `read_file`, `write_file`,
+  `edit_file`, `search`, `bash`, `bash_input`, `read_memory`, `add_memory`, `edit_memory`,
+  `read_skill`, `work_status`, `work_stop`, `web_search`, `write_todos` — plus five
+  `subagent_*` tools registered only when `@tintinweb/pi-subagents` is installed.
   - `edit_file` takes `{path, find, replace}` and replaces only on a unique exact match.
   - `bash` takes `yield_time_ms` and runs the command in a real PTY (Linux, via
     `script`); a command still running after the wait becomes a managed background
     session. `bash_input` sends stdin, snapshots, or terminates it.
-  - When a background session finishes, its result is delivered back to the agent as
-    a follow-up message and wakes it (this applies while a session is active;
-    `-p`/headless exits once the agent is idle).
-  - `read_file` defaults to 500 lines.
-- A built-in `muse` provider targets Meta Model API (`muse-spark-1.3-contributor`,
-  Responses API).
-- A built-in `opencode-go` provider runs Muse Spark through the OpenCode Go gateway
-  (`muse-spark-1.3-contributor` / `muse-spark-1.2-contributor`). Muse is routed over
-  the Responses API there and the gateway requires an `x-opencode-session` header,
-  both of which this provider sets for you.
-- Memory tools (`read_memory`, `add_memory`, `edit_memory`) store local Markdown under
-  `~/.pi/agent/memory`. `read_skill`, `work_status`, `work_stop`, and `web_search`
-  (Exa or Brave via `EXA_API_KEY` / `BRAVE_API_KEY`) are built in.
-- Subagent tools (`subagent_spawn`, `subagent_status`, `subagent_wait`,
-  `subagent_read_result`, `subagent_cancel`) are bridged over the
-  `@tintinweb/pi-subagents` (MIT) `pi.events` RPC bus when that extension is installed
-  (`pi install npm:@tintinweb/pi-subagents`), and stay unregistered otherwise.
-  `subagent_send_message` and `workflow` are not bridged because the community package
-  does not expose them over RPC.
+  - When a background session finishes, its result is delivered back to the agent as a
+    follow-up message and wakes it (while a session is active; `-p`/headless exits once
+    the agent is idle).
+  - `read_file` defaults to 500 lines. Memory tools store Markdown under
+    `~/.pi/agent/memory`. `web_search` uses Exa or Brave via `EXA_API_KEY` /
+    `BRAVE_API_KEY`.
+- Built-in providers: `muse` (Meta Model API, Responses API) and `opencode-go` (OpenCode
+  Go gateway, which additionally requires the `x-opencode-session` header this provider
+  sets for you).
 - Only the cheaper Contributor tier models are registered, and `pi-muse` defaults to
   `muse-spark-1.3-contributor` when no model is chosen.
-- Pi's standard tools (`read`, `write`, `edit`, `grep`, `find`) stay in the registry
-  but are not exposed by default.
+- Pi's standard tools (`read`, `write`, `edit`, `grep`, `find`) stay in the registry but
+  are not exposed by default.
 
 ## Quick start
 
@@ -75,12 +99,12 @@ the bundled CLI directly with
 
 - The code is **MIT**, inherited from upstream Pi (`LICENSE`, Copyright (c) 2025
   Mario Zechner) plus this fork's contributions.
-- `packages/coding-agent/src/core/muse-system-prompt.ts` contains a system prompt
-  **extracted from Meta's Muse Code CLI binary**. That text is third-party content, is
-  **not** covered by the MIT license, and remains the property of Meta. It is included
-  only for interoperability and research. Remove or replace it (for example with a
-  custom `~/.pi/SYSTEM.md`) if you are a rights holder or do not want it.
-  Extracted copy: https://github.com/souta-lab/muse-code-system-prompt
+- `packages/coding-agent/src/core/muse-system-prompt.ts` contains the system prompt of
+  Meta's Muse Code agent, **captured from a live Muse Code session**. That text is
+  third-party content, is **not** covered by the MIT license, and remains the property of
+  Meta. It is included only for interoperability and research. Remove or replace it (for
+  example with a custom `~/.pi/SYSTEM.md`) if you are a rights holder or do not want it.
+  Captured copy: https://github.com/souta-lab/muse-code-system-prompt
 
 ---
 
