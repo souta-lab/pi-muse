@@ -522,6 +522,7 @@ function buildSessionOptions(
 				});
 				if (contributor.model) {
 					options.model = contributor.model;
+					if (!parsed.thinking && options.thinkingLevel === undefined) options.thinkingLevel = "high";
 					break;
 				}
 			}

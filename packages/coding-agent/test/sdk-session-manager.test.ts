@@ -88,7 +88,8 @@ describe("createAgentSession session manager defaults", () => {
 			.map((item) => item.text)
 			.join("");
 
-		expect(realpathSync(output.trim())).toBe(realpathSync(sessionCwd));
+		const parsed = JSON.parse(output) as { output: string };
+		expect(realpathSync(parsed.output.trim())).toBe(realpathSync(sessionCwd));
 
 		session.dispose();
 	});
@@ -116,7 +117,8 @@ describe("createAgentSession session manager defaults", () => {
 			.map((item) => item.text)
 			.join("");
 
-		expect(output.trim().split("\n")).toEqual([
+		const parsed = JSON.parse(output) as { output: string };
+		expect(parsed.output.trim().split("\n")).toEqual([
 			session.sessionId,
 			session.sessionFile,
 			model!.provider,

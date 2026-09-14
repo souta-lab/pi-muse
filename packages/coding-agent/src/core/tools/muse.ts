@@ -377,6 +377,28 @@ function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+const VIDEO_MIME: Record<string, string> = { mp4: "video/mp4", mov: "video/quicktime" };
+
+function isNoticeLine(line: string): boolean {
+	return /^\s*\[/.test(line);
+}
+
+function formatReadFileResult(path: string, startLine: number, text: string): string {
+	let n = startLine;
+	const numbered = text.split("\n").map((line) => {
+		if (isNoticeLine(line)) return line;
+		const value = `${n}|${line}`;
+		n += 1;
+		return value;
+	});
+	return `Read text file \`${path}\`.\n${numbered.join("\n")}`;
+}
+
+function videoMimeFor(path: string): string | undefined {
+	const match = /\.([a-z0-9]+)$/i.exec(path);
+	return match ? VIDEO_MIME[match[1].toLowerCase()] : undefined;
+}
+
 export function createReadFileToolDefinition(cwd: string, options?: ReadToolOptions): ToolDefinition<any, any> {
 	const base = createReadToolDefinition(cwd, options);
 	return {
@@ -393,13 +415,33 @@ export function createReadFileToolDefinition(cwd: string, options?: ReadToolOpti
 			return { path: input.path, offset: input.offset, limit: input.limit ?? MUSE_READ_DEFAULT_LIMIT };
 		},
 		execute(toolCallId, input, signal, onUpdate, ctx) {
-			return base.execute(
-				toolCallId,
-				input as { path: string; offset?: number; limit?: number },
-				signal,
-				onUpdate,
-				ctx,
-			);
+			const typed = input as { path: string; offset?: number; limit?: number };
+			const mime = videoMimeFor(typed.path);
+			if (mime) {
+				return Promise.resolve({
+					content: [{ type: "text" as const, text: `Read video file [${mime}]` }],
+					details: undefined,
+				});
+			}
+			return Promise.resolve(base.execute(toolCallId, typed, signal, onUpdate, ctx))
+				.then((result) => {
+					const content = result.content as Array<{ type: string; text?: string }>;
+					if (content.some((item) => item.type === "image")) return result;
+					const text = content.map((item) => (item.type === "text" ? (item.text ?? "") : "")).join("");
+					return {
+						...result,
+						content: [{ type: "text" as const, text: formatReadFileResult(typed.path, typed.offset ?? 1, text) }],
+					};
+				})
+				.catch((error: unknown) => {
+					const message = error instanceof Error ? error.message : String(error);
+					if (/EISDIR|illegal operation on a directory|is a directory/i.test(message)) {
+						throw new Error(
+							`Cannot read \`${typed.path}\`: not a regular file. Use bash (e.g. ls) to list directories.`,
+						);
+					}
+					throw error;
+				});
 		},
 	};
 }
@@ -416,7 +458,16 @@ export function createWriteFileToolDefinition(cwd: string, options?: WriteToolOp
 		parameters: writeFileSchema,
 		constrainedSampling: base.constrainedSampling,
 		execute(toolCallId, input, signal, onUpdate, ctx) {
-			return base.execute(toolCallId, input as { path: string; content: string }, signal, onUpdate, ctx);
+			const typed = input as { path: string; content: string };
+			return Promise.resolve(base.execute(toolCallId, typed, signal, onUpdate, ctx)).then((result) => ({
+				...result,
+				content: [
+					{
+						type: "text" as const,
+						text: `wrote ${Buffer.byteLength(typed.content, "utf-8")} bytes to ${typed.path}`,
+					},
+				],
+			}));
 		},
 	};
 }
@@ -552,12 +603,16 @@ export function createMuseBashToolDefinition(cwd: string): ToolDefinition<any, B
 
 			if (finished) {
 				const body = capOutput(session.output, maxBytes);
-				const failed = session.exitCode !== 0 || session.signal !== null || session.exitCode === null || timedOut;
-				const note = !failed
-					? ""
-					: `[${timedOut ? "timed_out" : `exit_code: ${session.exitCode ?? "killed"}`}${session.signal ? ` signal: ${session.signal}` : ""}]`;
+				const payload: Record<string, unknown> = {
+					command: input.command,
+					description: input.description,
+					output: body,
+					exit_code: session.exitCode,
+				};
+				if (timedOut) payload.status = "timed_out";
+				if (session.signal) payload.signal = session.signal;
 				return {
-					content: [{ type: "text", text: `${body}${body && note ? "\n" : ""}${note}` }],
+					content: [{ type: "text", text: JSON.stringify(payload) }],
 					details: { exitCode: session.exitCode, signal: session.signal, timedOut },
 				};
 			}
@@ -569,7 +624,18 @@ export function createMuseBashToolDefinition(cwd: string): ToolDefinition<any, B
 			if (session.exited) notifyShellSessionExit(session, maxBytes ?? 50 * 1024);
 			const body = capOutput(session.output, maxBytes);
 			return {
-				content: [{ type: "text", text: `${body}${body ? "\n" : ""}[status: running; session_id: ${sessionId}]` }],
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify({
+							command: input.command,
+							description: input.description,
+							output: body,
+							status: "running",
+							session_id: sessionId,
+						}),
+					},
+				],
 				details: { sessionId, running: true },
 			};
 		},
@@ -753,6 +819,7 @@ export function createReadSkillToolDefinition(cwd: string): ToolDefinition<any, 
 		parameters: readSkillSchema,
 		execute(_toolCallId, input: Static<typeof readSkillSchema>) {
 			return (async () => {
+				const wanted = input.name.replace(/^(bundled|plugin|project|personal):\/\//, "");
 				const roots = [join(cwd, ".pi", "skills"), join(getAgentDir(), "skills")];
 				for (const root of roots) {
 					if (!existsSync(root)) continue;
@@ -765,9 +832,15 @@ export function createReadSkillToolDefinition(cwd: string): ToolDefinition<any, 
 					for (const entry of entries) {
 						if (!entry.isFile() || entry.name !== "SKILL.md") continue;
 						const parent = entry.parentPath ?? root;
-						if (basename(parent) !== input.name && basename(parent, ".md") !== input.name) continue;
-						const body = await readFile(join(parent, "SKILL.md"), "utf-8");
-						return { content: [{ type: "text" as const, text: body }], details: undefined };
+						const filePath = join(parent, "SKILL.md");
+						const body = await readFile(filePath, "utf-8");
+						const frontmatterName = /^---\s*\n[\s\S]*?\nname:\s*(.+?)\s*\n[\s\S]*?\n---/.exec(body)?.[1];
+						const candidates = [basename(parent), filePath, frontmatterName].filter(
+							(value): value is string => typeof value === "string" && value.length > 0,
+						);
+						if (candidates.includes(input.name) || candidates.includes(wanted)) {
+							return { content: [{ type: "text" as const, text: body }], details: undefined };
+						}
 					}
 				}
 				throw new Error(`Skill not found: ${input.name}`);
@@ -906,6 +979,9 @@ export function createWriteTodosToolDefinition(): ToolDefinition<typeof writeTod
 		parameters: writeTodosSchema,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		execute(_toolCallId, input) {
+			if (input.todos.filter((todo) => todo.status === "in_progress").length > 1) {
+				throw new Error("write_todos: keep at most one todo in_progress");
+			}
 			todos = input.todos;
 			const counts: Record<TodoStatus, number> = { pending: 0, in_progress: 0, completed: 0, cancelled: 0 };
 			const lines = todos.map((todo) => {

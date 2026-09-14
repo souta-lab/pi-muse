@@ -164,6 +164,35 @@ describe("muse write_todos", () => {
 	});
 });
 
+describe("muse file result formats", () => {
+	it("numbers read_file lines and reports written bytes", async () => {
+		const cwd = makeTempDir();
+		const definitions = createMuseToolDefinitions(cwd);
+
+		await definitions.write_file.execute(
+			"w1",
+			{ path: "a.txt", content: "one\ntwo\n" },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		const written = await definitions.write_file.execute(
+			"w2",
+			{ path: "b.txt", content: "hello" },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		expect((written.content[0] as { text: string }).text).toBe("wrote 5 bytes to b.txt");
+
+		const read = await definitions.read_file.execute("r1", { path: "a.txt" }, undefined, undefined, ctx(cwd));
+		const text = (read.content[0] as { text: string }).text;
+		expect(text).toContain("Read text file `a.txt`.");
+		expect(text).toContain("1|one");
+		expect(text).toContain("2|two");
+	});
+});
+
 describe("muse bash sessions", () => {
 	it("returns completed output for a fast command", async () => {
 		const cwd = makeTempDir();
@@ -177,8 +206,10 @@ describe("muse bash sessions", () => {
 			ctx(cwd),
 		);
 		const text = (result.content[0] as { text: string }).text;
-		expect(text).toContain("hi");
-		expect(text).not.toContain("session_id");
+		const parsed = JSON.parse(text) as { output: string; exit_code: number; session_id?: number };
+		expect(parsed.output).toContain("hi");
+		expect(parsed.exit_code).toBe(0);
+		expect(parsed.session_id).toBeUndefined();
 	});
 
 	it("supports interactive stdin through a live session", async () => {
@@ -193,7 +224,7 @@ describe("muse bash sessions", () => {
 			ctx(cwd),
 		);
 		const startedText = (started.content[0] as { text: string }).text;
-		const sessionId = startedText.match(/session_id: (\d+)/)?.[1];
+		const sessionId = (JSON.parse(startedText) as { session_id: number }).session_id;
 		expect(sessionId).toBeTruthy();
 
 		const sent = await definitions.bash_input.execute(
@@ -231,7 +262,8 @@ describe("muse bash sessions", () => {
 				undefined,
 				ctx(cwd),
 			);
-			const sessionId = Number((started.content[0] as { text: string }).text.match(/session_id: (\d+)/)?.[1]);
+			const sessionId = (JSON.parse((started.content[0] as { text: string }).text) as { session_id: number })
+				.session_id;
 			expect(sessionId).toBeTruthy();
 			await new Promise((resolve) => setTimeout(resolve, 2000));
 			expect(exits.some((event) => event.sessionId === sessionId && event.exitCode === 0)).toBe(true);

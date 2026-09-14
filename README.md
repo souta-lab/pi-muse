@@ -36,6 +36,7 @@ The harness interface is captured from a live Muse Code 1.2.1 session (model
 | `read_memory`, `add_memory`, `edit_memory` | Native, official schemas |
 | `read_skill`, `work_status`, `work_stop`, `web_search` | Native |
 | Per-session context (workspace identity, permission mode, subagent delegation, skill catalog) | Injected, as Muse does in its `developer` message |
+| Tool result shapes (`read_file` line numbers, `write_file` byte count, `bash` JSON) | Matched to the captured formats |
 | `subagent_*` | Bridged to `@tintinweb/pi-subagents` when installed (5 of 6; `subagent_send_message` is not exposed over its RPC) |
 | `workflow`, `snooze_reminder` | Not implemented |
 | Approvals, OS sandbox, event-sourced log/resume, skills/hooks/MCP/plugins | Not implemented (out of scope) |
