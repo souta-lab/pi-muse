@@ -61,7 +61,7 @@ import { assertValidSessionId, SessionManager } from "./core/session-manager.ts"
 import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
-import { MUSE_TOOL_NAMES } from "./core/tools/muse.ts";
+import { MUSE_SUBAGENT_TOOL_NAMES, MUSE_TOOL_NAMES } from "./core/tools/muse.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { MUSE_DEFAULT_MODEL_ID, MUSE_PROVIDER_ID, OPENCODE_GO_PROVIDER_ID } from "./extensions/muse.ts";
@@ -557,7 +557,9 @@ function buildSessionOptions(
 	} else if (!parsed.noTools && !parsed.noBuiltinTools) {
 		const configuredDefaults = settingsManager.getDefaultTools();
 		options.tools =
-			configuredDefaults && configuredDefaults.length > 0 ? [...configuredDefaults] : [...MUSE_TOOL_NAMES];
+			configuredDefaults && configuredDefaults.length > 0
+				? [...configuredDefaults]
+				: [...MUSE_TOOL_NAMES, ...MUSE_SUBAGENT_TOOL_NAMES];
 	}
 	if (parsed.excludeTools) {
 		options.excludeTools = [...parsed.excludeTools];

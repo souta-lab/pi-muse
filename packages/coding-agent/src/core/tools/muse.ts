@@ -40,6 +40,15 @@ export const MUSE_TOOL_NAMES = [
 
 export type MuseToolName = (typeof MUSE_TOOL_NAMES)[number];
 
+/** Subagent tools registered dynamically by the muse-subagents bridge when installed. */
+export const MUSE_SUBAGENT_TOOL_NAMES = [
+	"subagent_spawn",
+	"subagent_status",
+	"subagent_wait",
+	"subagent_read_result",
+	"subagent_cancel",
+] as const;
+
 export const MUSE_READ_DEFAULT_LIMIT = 500;
 const DEFAULT_YIELD_MS = 10_000;
 const MAX_YIELD_MS = 300_000;

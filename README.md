@@ -38,6 +38,15 @@ by Meta.)*
   (`muse-spark-1.3-contributor` / `muse-spark-1.2-contributor`). Muse is routed over
   the Responses API there and the gateway requires an `x-opencode-session` header,
   both of which this provider sets for you.
+- Memory tools (`read_memory`, `add_memory`, `edit_memory`) store local Markdown under
+  `~/.pi/agent/memory`. `read_skill`, `work_status`, `work_stop`, and `web_search`
+  (Exa or Brave via `EXA_API_KEY` / `BRAVE_API_KEY`) are built in.
+- Subagent tools (`subagent_spawn`, `subagent_status`, `subagent_wait`,
+  `subagent_read_result`, `subagent_cancel`) are bridged over the
+  `@tintinweb/pi-subagents` (MIT) `pi.events` RPC bus when that extension is installed
+  (`pi install npm:@tintinweb/pi-subagents`), and stay unregistered otherwise.
+  `subagent_send_message` and `workflow` are not bridged because the community package
+  does not expose them over RPC.
 - Only the cheaper Contributor tier models are registered, and `pi-muse` defaults to
   `muse-spark-1.3-contributor` when no model is chosen.
 - Pi's standard tools (`read`, `write`, `edit`, `grep`, `find`) stay in the registry
