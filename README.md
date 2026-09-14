@@ -32,9 +32,10 @@ The harness interface is captured from a live Muse Code 1.2.1 session (model
 | Runtime system prompt | Captured verbatim |
 | `read_file`, `write_file`, `edit_file`, `write_todos` | Exact schemas |
 | `bash`, `bash_input` | Exact schemas (`yield_time_ms`, PTY, integer session id, `chars`) |
-| `search` | Official argument surface, mapped onto ripgrep (a few flags are accepted but not honored) |
+| `search` | Full official argument surface, run against ripgrep |
 | `read_memory`, `add_memory`, `edit_memory` | Native, official schemas |
 | `read_skill`, `work_status`, `work_stop`, `web_search` | Native |
+| Per-session context (workspace identity, permission mode, subagent delegation, skill catalog) | Injected, as Muse does in its `developer` message |
 | `subagent_*` | Bridged to `@tintinweb/pi-subagents` when installed (5 of 6; `subagent_send_message` is not exposed over its RPC) |
 | `workflow`, `snooze_reminder` | Not implemented |
 | Approvals, OS sandbox, event-sourced log/resume, skills/hooks/MCP/plugins | Not implemented (out of scope) |

@@ -213,7 +213,7 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 		case "edit_file":
 			return createEditFileToolDefinition(cwd, options?.edit);
 		case "search":
-			return createSearchToolDefinition(cwd, options?.grep);
+			return createSearchToolDefinition(cwd);
 		case "bash_input":
 			return createBashInputToolDefinition();
 		case "read_memory":
@@ -262,7 +262,7 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 		case "edit_file":
 			return wrapToolDefinition(createEditFileToolDefinition(cwd, options?.edit));
 		case "search":
-			return wrapToolDefinition(createSearchToolDefinition(cwd, options?.grep));
+			return wrapToolDefinition(createSearchToolDefinition(cwd));
 		case "bash_input":
 			return wrapToolDefinition(createBashInputToolDefinition());
 		case "read_memory":
@@ -317,7 +317,6 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 			read: options?.read,
 			write: options?.write,
 			edit: options?.edit,
-			search: options?.grep,
 		}),
 	};
 }
@@ -352,7 +351,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		read_file: wrapToolDefinition(createReadFileToolDefinition(cwd, options?.read)),
 		write_file: wrapToolDefinition(createWriteFileToolDefinition(cwd, options?.write)),
 		edit_file: wrapToolDefinition(createEditFileToolDefinition(cwd, options?.edit)),
-		search: wrapToolDefinition(createSearchToolDefinition(cwd, options?.grep)),
+		search: wrapToolDefinition(createSearchToolDefinition(cwd)),
 		bash: wrapToolDefinition(createMuseBashToolDefinition(cwd)),
 		bash_input: wrapToolDefinition(createBashInputToolDefinition()),
 		read_memory: wrapToolDefinition(createReadMemoryToolDefinition()),

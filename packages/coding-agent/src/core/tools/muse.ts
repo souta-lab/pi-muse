@@ -15,7 +15,7 @@ import {
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { bashToolSystemPromptContribution } from "./bash.ts";
 import { createEditToolDefinition, type EditToolDetails, type EditToolOptions } from "./edit.ts";
-import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
+import { runMuseSearch } from "./muse-search.ts";
 import { createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { truncateTail } from "./truncate.ts";
@@ -447,42 +447,17 @@ export function createEditFileToolDefinition(
 	};
 }
 
-export function createSearchToolDefinition(cwd: string, options?: GrepToolOptions): ToolDefinition<any, any> {
-	const base = createGrepToolDefinition(cwd, options);
+export function createSearchToolDefinition(cwd: string): ToolDefinition<any, any> {
 	return {
 		name: "search",
 		label: "search",
 		description:
 			"Search files with native ripgrep semantics. Results are confined to the workspace and respect ignore files by default.",
-		promptSnippet: base.promptSnippet,
+		promptSnippet: "Search file contents for patterns (respects .gitignore)",
 		parameters: searchSchema,
-		constrainedSampling: base.constrainedSampling,
-		execute(toolCallId, input: SearchToolInput, signal, onUpdate, ctx) {
-			const ignoreCase =
-				input.case_sensitive === true
-					? false
-					: input.case_sensitive === false || input.smart_case === true
-						? true
-						: undefined;
-			const context =
-				input.context_after !== undefined || input.context_before !== undefined
-					? Math.max(input.context_after ?? 0, input.context_before ?? 0)
-					: undefined;
-			return base.execute(
-				toolCallId,
-				{
-					pattern: input.pattern,
-					path: input.paths?.[0],
-					glob: input.glob?.[0],
-					ignoreCase,
-					literal: input.mode === "literal" || input.mode === undefined,
-					context,
-					limit: input.max_matches,
-				},
-				signal,
-				onUpdate,
-				ctx,
-			);
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
+		execute(_toolCallId, input: SearchToolInput, _signal, _onUpdate, ctx) {
+			return runMuseSearch(cwd, input, ctx);
 		},
 	};
 }
@@ -950,7 +925,6 @@ export interface MuseToolsOptions {
 	read?: ReadToolOptions;
 	write?: WriteToolOptions;
 	edit?: EditToolOptions;
-	search?: GrepToolOptions;
 }
 
 export function createMuseToolDefinitions(
@@ -961,7 +935,7 @@ export function createMuseToolDefinitions(
 		read_file: createReadFileToolDefinition(cwd, options?.read),
 		write_file: createWriteFileToolDefinition(cwd, options?.write),
 		edit_file: createEditFileToolDefinition(cwd, options?.edit),
-		search: createSearchToolDefinition(cwd, options?.search),
+		search: createSearchToolDefinition(cwd),
 		bash: createMuseBashToolDefinition(cwd),
 		bash_input: createBashInputToolDefinition(),
 		read_memory: createReadMemoryToolDefinition(),

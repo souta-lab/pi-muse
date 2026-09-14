@@ -13,6 +13,7 @@ import {
 	MUSE_TOOL_NAMES,
 	onShellSessionExit,
 } from "../src/core/tools/muse.ts";
+import { buildRipgrepArgs } from "../src/core/tools/muse-search.ts";
 import museExtension, { MUSE_PROVIDER_ID, OPENCODE_GO_PROVIDER_ID } from "../src/extensions/muse.ts";
 
 const tempDirs: string[] = [];
@@ -302,6 +303,48 @@ describe("muse memory", () => {
 			if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = previous;
 		}
+	});
+});
+
+describe("muse search flags", () => {
+	it("maps the official argument surface to ripgrep flags", () => {
+		const args = buildRipgrepArgs({
+			pattern: "foo",
+			paths: ["src"],
+			glob: ["*.ts", "!*.spec.ts"],
+			hidden: true,
+			no_ignore: true,
+			follow_symlinks: true,
+			binary: "search_as_text",
+			output_mode: "files_with_matches",
+			mode: "regex",
+			case_sensitive: false,
+			word: true,
+			whole_line: true,
+			context_before: 2,
+			context_after: 3,
+			max_matches: 10,
+		});
+		const joined = args.join(" ");
+		expect(args).toContain("--hidden");
+		expect(args).toContain("--no-ignore");
+		expect(args).toContain("--follow");
+		expect(args).toContain("--text");
+		expect(args).toContain("--files-with-matches");
+		expect(args).toContain("--ignore-case");
+		expect(args).toContain("--word-regexp");
+		expect(args).toContain("--line-regexp");
+		expect(args).not.toContain("--fixed-strings");
+		expect(joined).toContain("-g *.ts");
+		expect(joined).toContain("-g !*.spec.ts");
+		expect(joined).toContain("-e foo");
+		expect(args.at(-1)).toBe("src");
+	});
+
+	it("defaults to literal mode with the workspace root as the path", () => {
+		const args = buildRipgrepArgs({ pattern: "a.b" });
+		expect(args).toContain("--fixed-strings");
+		expect(args.at(-1)).toBe(".");
 	});
 });
 
