@@ -514,7 +514,7 @@ function buildSessionOptions(
 		const savedProvider = settingsManager.getDefaultProvider();
 		const savedModelId = settingsManager.getDefaultModel();
 		if (!savedProvider && !savedModelId) {
-			for (const provider of [MUSE_PROVIDER_ID, OPENCODE_GO_PROVIDER_ID]) {
+			for (const provider of [OPENCODE_GO_PROVIDER_ID, MUSE_PROVIDER_ID]) {
 				if (!modelRuntime.hasConfiguredAuth(provider)) continue;
 				const contributor = resolveCliModel({
 					cliProvider: provider,
