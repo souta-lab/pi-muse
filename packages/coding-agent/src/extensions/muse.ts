@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "../core/extensions/types.ts";
+import { onShellSessionExit } from "../core/tools/muse.ts";
 
 export const MUSE_PROVIDER_ID = "muse";
 export const OPENCODE_GO_PROVIDER_ID = "opencode-go";
@@ -61,5 +62,15 @@ export default function museExtension(pi: ExtensionAPI): void {
 			contextWindow: 1_048_576,
 			maxTokens: 131_072,
 		})),
+	});
+
+	onShellSessionExit(({ sessionId, output, exitCode, signal }) => {
+		const status =
+			exitCode !== null ? `exit_code ${exitCode}` : signal ? `signal ${signal}` : "no exit code recorded";
+		const text = `[background bash session ${sessionId} finished (${status})]\n${output}`;
+		pi.sendMessage(
+			{ customType: "muse_bash_result", content: text, display: false },
+			{ deliverAs: "followUp", triggerTurn: true },
+		);
 	});
 }

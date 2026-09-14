@@ -11,6 +11,7 @@ import {
 	createMuseToolDefinitions,
 	createWriteTodosToolDefinition,
 	MUSE_TOOL_NAMES,
+	onShellSessionExit,
 } from "../src/core/tools/muse.ts";
 import museExtension, { MUSE_PROVIDER_ID, OPENCODE_GO_PROVIDER_ID } from "../src/extensions/muse.ts";
 
@@ -172,32 +173,63 @@ describe("muse bash sessions", () => {
 		expect(text).not.toContain("session_id");
 	});
 
-	it("backgrounds a slow command and lets bash_input terminate it", async () => {
+	it("supports interactive stdin through a live session", async () => {
 		const cwd = makeTempDir();
 		const definitions = createMuseToolDefinitions(cwd);
 
 		const started = await definitions.bash.execute(
-			"bash-slow",
-			{ command: "sleep 30", yield_time_ms: 300 },
+			"bash-pty",
+			{ command: "cat", yield_time_ms: 400 },
 			undefined,
 			undefined,
 			ctx(cwd),
 		);
 		const startedText = (started.content[0] as { text: string }).text;
-		expect(startedText).toContain("status: running");
 		const sessionId = startedText.match(/session_id: ([0-9a-f-]+)/)?.[1];
 		expect(sessionId).toBeTruthy();
 
-		const terminated = await definitions.bash_input.execute(
-			"bash-input",
+		const sent = await definitions.bash_input.execute(
+			"bash-pty-in",
+			{ session_id: sessionId!, input: "hello-pty\n" },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		expect((sent.content[0] as { text: string }).text).toContain("hello-pty");
+
+		const stopped = await definitions.bash_input.execute(
+			"bash-pty-stop",
 			{ session_id: sessionId!, terminate: true },
 			undefined,
 			undefined,
 			ctx(cwd),
 		);
-		const terminatedText = (terminated.content[0] as { text: string }).text;
-		expect(terminatedText).toContain("status: completed");
-		expect(terminatedText).toContain("original_output_bytes:");
+		expect((stopped.content[0] as { text: string }).text).toContain("status: completed");
+	});
+
+	it("delivers the terminal result to an exit listener", async () => {
+		const cwd = makeTempDir();
+		const definitions = createMuseToolDefinitions(cwd);
+		const exits: Array<{ sessionId: string; exitCode: number | null }> = [];
+		const unsubscribe = onShellSessionExit((event) =>
+			exits.push({ sessionId: event.sessionId, exitCode: event.exitCode }),
+		);
+
+		try {
+			const started = await definitions.bash.execute(
+				"bash-exit",
+				{ command: "sleep 1; echo finished", yield_time_ms: 200 },
+				undefined,
+				undefined,
+				ctx(cwd),
+			);
+			const sessionId = (started.content[0] as { text: string }).text.match(/session_id: ([0-9a-f-]+)/)?.[1];
+			expect(sessionId).toBeTruthy();
+			await new Promise((resolve) => setTimeout(resolve, 2000));
+			expect(exits.some((event) => event.sessionId === sessionId && event.exitCode === 0)).toBe(true);
+		} finally {
+			unsubscribe();
+		}
 	});
 });
 

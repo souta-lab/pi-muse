@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import {
@@ -107,6 +108,42 @@ interface MuseShellSession {
 	exitCode: number | null;
 	signal: NodeJS.Signals | null;
 	exitedPromise: Promise<void>;
+	sessionId?: string;
+	notified?: boolean;
+	waiters: Array<() => void>;
+}
+
+export interface ShellSessionExit {
+	sessionId: string;
+	output: string;
+	exitCode: number | null;
+	signal: NodeJS.Signals | null;
+}
+
+const shellExitListeners = new Set<(event: ShellSessionExit) => void>();
+
+/** Subscribe to background shell sessions finishing so callers can wake the agent. */
+export function onShellSessionExit(listener: (event: ShellSessionExit) => void): () => void {
+	shellExitListeners.add(listener);
+	return () => shellExitListeners.delete(listener);
+}
+
+function notifyShellSessionExit(session: MuseShellSession): void {
+	if (!session.sessionId || session.notified) return;
+	session.notified = true;
+	const event: ShellSessionExit = {
+		sessionId: session.sessionId,
+		output: formatBashOutput(session.output),
+		exitCode: session.exitCode,
+		signal: session.signal,
+	};
+	for (const listener of shellExitListeners) {
+		try {
+			listener(event);
+		} catch {
+			// A failing listener must not break the shell session.
+		}
+	}
 }
 
 export interface BashDetails {
@@ -160,6 +197,53 @@ function buildBashEnv(ctx: ExtensionContext | undefined): NodeJS.ProcessEnv {
 		if (ctx.thinkingLevel) env.PI_REASONING_LEVEL = ctx.thinkingLevel;
 	}
 	return env;
+}
+
+const SCRIPT_PATHS = ["/usr/bin/script", "/bin/script", "/usr/local/bin/script"];
+let cachedScriptPath: string | null | undefined;
+
+function resolveScriptPath(): string | null {
+	if (cachedScriptPath === undefined) {
+		cachedScriptPath = process.platform === "linux" ? (SCRIPT_PATHS.find((path) => existsSync(path)) ?? null) : null;
+	}
+	return cachedScriptPath;
+}
+
+function normalizeShellOutput(text: string): string {
+	return text.replace(/\r\n/g, "\n").replace(/\r/g, "");
+}
+
+interface SpawnedShellCommand {
+	child: ChildProcess;
+	pty: boolean;
+}
+
+function spawnShellCommand(command: string, cwd: string, env: NodeJS.ProcessEnv): SpawnedShellCommand {
+	const scriptPath = resolveScriptPath();
+	const shellConfig = getShellConfig();
+	if (scriptPath) {
+		const child = spawn(scriptPath, ["-q", "-e", "-c", command, "/dev/null"], {
+			cwd,
+			env: { ...env, SHELL: env.SHELL ?? shellConfig.shell },
+			detached: process.platform !== "win32",
+			stdio: ["pipe", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		return { child, pty: true };
+	}
+	const commandFromStdin = shellConfig.commandTransport === "stdin";
+	const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
+		cwd,
+		detached: process.platform !== "win32",
+		env,
+		stdio: ["pipe", "pipe", "pipe"],
+		windowsHide: true,
+	});
+	if (commandFromStdin) {
+		child.stdin?.on("error", () => {});
+		child.stdin?.end(command);
+	}
+	return { child, pty: false };
 }
 
 export function createReadFileToolDefinition(
@@ -262,23 +346,7 @@ export function createMuseBashToolDefinition(cwd: string): ToolDefinition<any, B
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(_toolCallId, input: BashInput, signal, _onUpdate, ctx) {
 			const workingDir = ctx?.cwd || cwd;
-			const shellConfig = getShellConfig();
-			const commandFromStdin = shellConfig.commandTransport === "stdin";
-			const child = spawn(
-				shellConfig.shell,
-				commandFromStdin ? shellConfig.args : [...shellConfig.args, input.command],
-				{
-					cwd: workingDir,
-					detached: process.platform !== "win32",
-					env: buildBashEnv(ctx),
-					stdio: ["pipe", "pipe", "pipe"],
-					windowsHide: true,
-				},
-			);
-			if (commandFromStdin) {
-				child.stdin?.on("error", () => {});
-				child.stdin?.end(input.command);
-			}
+			const { child, pty } = spawnShellCommand(input.command, workingDir, buildBashEnv(ctx));
 			if (child.pid) trackDetachedChildPid(child.pid);
 
 			let resolveExit: () => void = () => {};
@@ -293,15 +361,21 @@ export function createMuseBashToolDefinition(cwd: string): ToolDefinition<any, B
 				exitCode: null,
 				signal: null,
 				exitedPromise,
+				waiters: [],
 			};
-			child.stdout?.on("data", (data: Buffer) => appendSessionOutput(session, data.toString()));
-			child.stderr?.on("data", (data: Buffer) => appendSessionOutput(session, data.toString()));
+			const onData = (data: Buffer) => {
+				appendSessionOutput(session, pty ? normalizeShellOutput(data.toString()) : data.toString());
+				for (const waiter of session.waiters.splice(0)) waiter();
+			};
+			child.stdout?.on("data", onData);
+			child.stderr?.on("data", onData);
 			child.on("error", (error) => {
 				appendSessionOutput(session, `${error.message}\n`);
 				session.exited = true;
 				session.exitCode = null;
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				resolveExit();
+				notifyShellSessionExit(session);
 			});
 			child.on("close", (code, signalName) => {
 				session.exited = true;
@@ -309,6 +383,7 @@ export function createMuseBashToolDefinition(cwd: string): ToolDefinition<any, B
 				session.signal = signalName;
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				resolveExit();
+				notifyShellSessionExit(session);
 			});
 			const onAbort = () => {
 				if (child.pid) killProcessTree(child.pid);
@@ -340,7 +415,9 @@ export function createMuseBashToolDefinition(cwd: string): ToolDefinition<any, B
 
 			const sessionId = randomUUID();
 			shellSessions.set(sessionId, session);
+			session.sessionId = sessionId;
 			session.delivered = session.output.length;
+			if (session.exited) notifyShellSessionExit(session);
 			const body = formatBashOutput(session.output);
 			return {
 				content: [
@@ -376,6 +453,10 @@ export function createBashInputToolDefinition(): ToolDefinition<any, BashInputDe
 
 			if (input.input !== undefined && !session.exited) {
 				session.child.stdin?.write(input.input);
+				await Promise.race([
+					new Promise<void>((resolve) => session.waiters.push(resolve)),
+					new Promise<void>((resolve) => setTimeout(resolve, 500)),
+				]);
 			}
 			if (input.terminate && !session.exited) {
 				if (session.child.pid) killProcessTree(session.child.pid);

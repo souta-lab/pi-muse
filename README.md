@@ -25,8 +25,12 @@ by Meta.)*
 - The model sees only Muse Code's tool set: `read_file`, `write_file`, `edit_file`,
   `search`, `bash`, `bash_input`, `write_todos`.
   - `edit_file` takes `{path, find, replace}` and replaces only on a unique exact match.
-  - `bash` takes `yield_time_ms` and moves a long-running command to a managed
-    background session; `bash_input` sends stdin, snapshots, or terminates it.
+  - `bash` takes `yield_time_ms` and runs the command in a real PTY (Linux, via
+    `script`); a command still running after the wait becomes a managed background
+    session. `bash_input` sends stdin, snapshots, or terminates it.
+  - When a background session finishes, its result is delivered back to the agent as
+    a follow-up message and wakes it (this applies while a session is active;
+    `-p`/headless exits once the agent is idle).
   - `read_file` defaults to 500 lines.
 - A built-in `muse` provider targets Meta Model API (`muse-spark-1.3`, Responses API).
 - A built-in `opencode-go` provider runs Muse Spark through the OpenCode Go gateway
