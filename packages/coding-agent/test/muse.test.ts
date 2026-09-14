@@ -12,7 +12,7 @@ import {
 	createWriteTodosToolDefinition,
 	MUSE_TOOL_NAMES,
 } from "../src/core/tools/muse.ts";
-import museExtension, { MUSE_PROVIDER_ID } from "../src/extensions/muse.ts";
+import museExtension, { MUSE_PROVIDER_ID, OPENCODE_GO_PROVIDER_ID } from "../src/extensions/muse.ts";
 
 const tempDirs: string[] = [];
 
@@ -239,7 +239,7 @@ describe("muse provider", () => {
 
 		museExtension(api);
 
-		expect(registered).toHaveLength(1);
+		expect(registered.map((entry) => entry.name)).toEqual([MUSE_PROVIDER_ID, OPENCODE_GO_PROVIDER_ID]);
 		expect(registered[0].name).toBe(MUSE_PROVIDER_ID);
 		const config = registered[0].config as {
 			baseUrl: string;
@@ -250,5 +250,16 @@ describe("muse provider", () => {
 		expect(config.api).toBe("openai-responses");
 		expect(config.models.map((model) => model.id)).toContain("muse-spark-1.3");
 		expect(config.models.every((model) => model.reasoning)).toBe(true);
+
+		const opencodeGo = registered[1].config as {
+			baseUrl: string;
+			api: string;
+			headers: Record<string, string>;
+			models: Array<{ id: string }>;
+		};
+		expect(opencodeGo.baseUrl).toBe("https://opencode.ai/zen/go/v1");
+		expect(opencodeGo.api).toBe("openai-responses");
+		expect(opencodeGo.headers["x-opencode-session"]).toMatch(/^pi-muse-/);
+		expect(opencodeGo.models.map((model) => model.id)).toContain("muse-spark-1.3-contributor");
 	});
 });

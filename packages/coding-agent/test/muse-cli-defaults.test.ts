@@ -77,5 +77,9 @@ describe("pi-muse CLI defaults", () => {
 		expect(model?.id).toBe("muse-spark-1.3");
 		expect(model?.api).toBe("openai-responses");
 		expect(model?.reasoning).toBe(true);
+
+		const opencodeGo = services.modelRuntime.getModel("opencode-go", "muse-spark-1.3-contributor");
+		expect(opencodeGo?.id).toBe("muse-spark-1.3-contributor");
+		expect(opencodeGo?.api).toBe("openai-responses");
 	});
 });
