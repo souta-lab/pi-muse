@@ -7,7 +7,7 @@
 		"configDir": ".pi"
 	},
 	"bin": {
-		"pi": "dist/bundle/cli.js"
+		"pi-muse": "dist/bundle/cli.js"
 	},
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",

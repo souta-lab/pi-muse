@@ -43,6 +43,27 @@ export {
 	type LsToolOptions,
 } from "./ls.ts";
 export {
+	type BashDetails,
+	type BashInputDetails,
+	createBashInputToolDefinition,
+	createEditFileToolDefinition,
+	createMuseBashToolDefinition,
+	createMuseToolDefinitions,
+	createMuseTools,
+	createReadFileToolDefinition,
+	createSearchToolDefinition,
+	createWriteFileToolDefinition,
+	createWriteTodosToolDefinition,
+	type EditFileToolInput,
+	MUSE_READ_DEFAULT_LIMIT,
+	MUSE_TOOL_NAMES,
+	type MuseToolName,
+	type MuseToolsOptions,
+	type SearchToolInput,
+	type TodoStatus,
+	type WriteTodosToolInput,
+} from "./muse.ts";
+export {
 	createLocalPowerShellOperations,
 	createPowerShellTool,
 	createPowerShellToolDefinition,
@@ -86,13 +107,38 @@ import { createEditTool, createEditToolDefinition, type EditToolOptions } from "
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
+import {
+	createBashInputToolDefinition,
+	createEditFileToolDefinition,
+	createMuseBashToolDefinition,
+	createMuseToolDefinitions,
+	createReadFileToolDefinition,
+	createSearchToolDefinition,
+	createWriteFileToolDefinition,
+	createWriteTodosToolDefinition,
+} from "./muse.ts";
 import { createPowerShellTool, createPowerShellToolDefinition, type PowerShellToolOptions } from "./powershell.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
+import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName = "read" | "bash" | "powershell" | "edit" | "write" | "grep" | "find" | "ls";
+export type ToolName =
+	| "read"
+	| "bash"
+	| "powershell"
+	| "edit"
+	| "write"
+	| "grep"
+	| "find"
+	| "ls"
+	| "read_file"
+	| "write_file"
+	| "edit_file"
+	| "search"
+	| "bash_input"
+	| "write_todos";
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
 	"bash",
@@ -102,6 +148,12 @@ export const allToolNames: Set<ToolName> = new Set([
 	"grep",
 	"find",
 	"ls",
+	"read_file",
+	"write_file",
+	"edit_file",
+	"search",
+	"bash_input",
+	"write_todos",
 ]);
 
 export interface ToolsOptions {
@@ -120,7 +172,7 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 		case "read":
 			return createReadToolDefinition(cwd, options?.read);
 		case "bash":
-			return createBashToolDefinition(cwd, options?.bash);
+			return createMuseBashToolDefinition(cwd);
 		case "powershell":
 			return createPowerShellToolDefinition(cwd, options?.powershell);
 		case "edit":
@@ -133,6 +185,18 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createFindToolDefinition(cwd, options?.find);
 		case "ls":
 			return createLsToolDefinition(cwd, options?.ls);
+		case "read_file":
+			return createReadFileToolDefinition(cwd, options?.read);
+		case "write_file":
+			return createWriteFileToolDefinition(cwd, options?.write);
+		case "edit_file":
+			return createEditFileToolDefinition(cwd, options?.edit);
+		case "search":
+			return createSearchToolDefinition(cwd, options?.grep);
+		case "bash_input":
+			return createBashInputToolDefinition();
+		case "write_todos":
+			return createWriteTodosToolDefinition();
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -143,7 +207,7 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 		case "read":
 			return createReadTool(cwd, options?.read);
 		case "bash":
-			return createBashTool(cwd, options?.bash);
+			return wrapToolDefinition(createMuseBashToolDefinition(cwd));
 		case "powershell":
 			return createPowerShellTool(cwd, options?.powershell);
 		case "edit":
@@ -156,6 +220,18 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createFindTool(cwd, options?.find);
 		case "ls":
 			return createLsTool(cwd, options?.ls);
+		case "read_file":
+			return wrapToolDefinition(createReadFileToolDefinition(cwd, options?.read));
+		case "write_file":
+			return wrapToolDefinition(createWriteFileToolDefinition(cwd, options?.write));
+		case "edit_file":
+			return wrapToolDefinition(createEditFileToolDefinition(cwd, options?.edit));
+		case "search":
+			return wrapToolDefinition(createSearchToolDefinition(cwd, options?.grep));
+		case "bash_input":
+			return wrapToolDefinition(createBashInputToolDefinition());
+		case "write_todos":
+			return wrapToolDefinition(createWriteTodosToolDefinition());
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -182,13 +258,18 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): Record<ToolName, ToolDef> {
 	return {
 		read: createReadToolDefinition(cwd, options?.read),
-		bash: createBashToolDefinition(cwd, options?.bash),
 		powershell: createPowerShellToolDefinition(cwd, options?.powershell),
 		edit: createEditToolDefinition(cwd, options?.edit),
 		write: createWriteToolDefinition(cwd, options?.write),
 		grep: createGrepToolDefinition(cwd, options?.grep),
 		find: createFindToolDefinition(cwd, options?.find),
 		ls: createLsToolDefinition(cwd, options?.ls),
+		...createMuseToolDefinitions(cwd, {
+			read: options?.read,
+			write: options?.write,
+			edit: options?.edit,
+			search: options?.grep,
+		}),
 	};
 }
 
@@ -213,12 +294,18 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
 	return {
 		read: createReadTool(cwd, options?.read),
-		bash: createBashTool(cwd, options?.bash),
 		powershell: createPowerShellTool(cwd, options?.powershell),
 		edit: createEditTool(cwd, options?.edit),
 		write: createWriteTool(cwd, options?.write),
 		grep: createGrepTool(cwd, options?.grep),
 		find: createFindTool(cwd, options?.find),
 		ls: createLsTool(cwd, options?.ls),
+		read_file: wrapToolDefinition(createReadFileToolDefinition(cwd, options?.read)),
+		write_file: wrapToolDefinition(createWriteFileToolDefinition(cwd, options?.write)),
+		edit_file: wrapToolDefinition(createEditFileToolDefinition(cwd, options?.edit)),
+		search: wrapToolDefinition(createSearchToolDefinition(cwd, options?.grep)),
+		bash: wrapToolDefinition(createMuseBashToolDefinition(cwd)),
+		bash_input: wrapToolDefinition(createBashInputToolDefinition()),
+		write_todos: wrapToolDefinition(createWriteTodosToolDefinition()),
 	};
 }

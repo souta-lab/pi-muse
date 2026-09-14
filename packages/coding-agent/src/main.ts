@@ -47,6 +47,7 @@ import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
+import { MUSE_SYSTEM_PROMPT } from "./core/muse-system-prompt.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
@@ -60,6 +61,7 @@ import { assertValidSessionId, SessionManager } from "./core/session-manager.ts"
 import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
+import { MUSE_TOOL_NAMES } from "./core/tools/muse.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
@@ -533,6 +535,10 @@ function buildSessionOptions(
 	}
 	if (parsed.tools) {
 		options.tools = [...parsed.tools];
+	} else if (!parsed.noTools && !parsed.noBuiltinTools) {
+		const configuredDefaults = settingsManager.getDefaultTools();
+		options.tools =
+			configuredDefaults && configuredDefaults.length > 0 ? [...configuredDefaults] : [...MUSE_TOOL_NAMES];
 	}
 	if (parsed.excludeTools) {
 		options.excludeTools = [...parsed.excludeTools];
@@ -770,6 +776,7 @@ export async function main(args: string[], options?: MainOptions) {
 				noThemes: parsed.noThemes,
 				noContextFiles: parsed.noContextFiles,
 				systemPrompt: parsed.systemPrompt,
+				defaultSystemPrompt: MUSE_SYSTEM_PROMPT,
 				appendSystemPrompt: parsed.appendSystemPrompt,
 				extensionFactories,
 			},

@@ -113,7 +113,8 @@ for (const subpath of ["/client", "/experimental/plugin"]) {
 }
 `);
 		run(runtime, [entry], { cwd: directory, env, timeout: 30_000 });
-		for (const cli of new Set([manifest.bin.pi, "dist/cli.js"])) {
+		const cliBin = manifest.bin?.["pi-muse"] ?? manifest.bin?.pi;
+		for (const cli of new Set([cliBin, "dist/cli.js"])) {
 			const output = run(runtime, [join(packageDir, cli), "--version"], { cwd: directory, env, timeout: 30_000 });
 			if (output.trim() !== manifest.version) throw new Error(`Unexpected version from ${cli}: ${output}`);
 		}

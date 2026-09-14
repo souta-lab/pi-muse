@@ -172,6 +172,8 @@ export interface DefaultResourceLoaderOptions {
 	noThemes?: boolean;
 	noContextFiles?: boolean;
 	systemPrompt?: string;
+	/** Prompt used when neither `systemPrompt` nor a discovered SYSTEM.md file is present. */
+	defaultSystemPrompt?: string;
 	appendSystemPrompt?: string[];
 	extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
 	skillsOverride?: (base: { skills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
@@ -210,6 +212,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private noThemes: boolean;
 	private noContextFiles: boolean;
 	private systemPromptSource?: string;
+	private defaultSystemPrompt?: string;
 	private appendSystemPromptSource?: string[];
 	private extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
 	private skillsOverride?: (base: { skills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
@@ -272,6 +275,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.noThemes = options.noThemes ?? false;
 		this.noContextFiles = options.noContextFiles ?? false;
 		this.systemPromptSource = options.systemPrompt;
+		this.defaultSystemPrompt = options.defaultSystemPrompt;
 		this.appendSystemPromptSource = options.appendSystemPrompt;
 		this.extensionsOverride = options.extensionsOverride;
 		this.skillsOverride = options.skillsOverride;
@@ -524,7 +528,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.agentsFiles = resolvedAgentsFiles.agentsFiles;
 
 		const systemPromptSource = this.systemPromptSource ?? this.discoverSystemPromptFile();
-		const baseSystemPrompt = resolvePromptInput(systemPromptSource, "system prompt");
+		const baseSystemPrompt = resolvePromptInput(systemPromptSource, "system prompt") ?? this.defaultSystemPrompt;
 		this.systemPrompt = this.systemPromptOverride ? this.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
 		this.systemPromptSourcePath =
 			systemPromptSource && existsSync(systemPromptSource) ? resolvePath(systemPromptSource) : undefined;

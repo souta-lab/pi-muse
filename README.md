@@ -1,3 +1,61 @@
+# pi-muse
+
+A fork of [Pi](https://github.com/earendil-works/pi) that runs Meta's **Muse Code**
+harness interface on top of Pi's agent loop, TUI, session, and provider layers.
+
+## Why this exists
+
+Meta's **Muse Spark 1.3** is widely discussed as a "benchmaxxed" model. Meta
+co-trained it inside Muse Code and locks its best behavior to that harness, so the
+model reaches its advertised performance mainly when it is driven by Muse Code's
+system prompt and tool interface. This project is an alternative, open, hackable
+harness for the same model: it keeps Pi's runtime and swaps in Muse Code's system
+prompt and tool contract, so you can run Muse Spark 1.3 (Meta Model API or
+OpenRouter) without depending on Meta's closed CLI.
+
+*(The "benchmaxxed"/lock-in framing is the maintainer's motivation, not a statement
+by Meta.)*
+
+## What is different from upstream Pi
+
+- The CLI binary is renamed to `pi-muse` (`packages/coding-agent/package.json`, `bin`).
+- The default system prompt is replaced with the Muse Code prompt
+  (`src/core/muse-system-prompt.ts`). It is applied only for the CLI through
+  `defaultSystemPrompt`, so SDK callers keep Pi's built-in prompt.
+- The model sees only Muse Code's tool set: `read_file`, `write_file`, `edit_file`,
+  `search`, `bash`, `bash_input`, `write_todos`.
+  - `edit_file` takes `{path, find, replace}` and replaces only on a unique exact match.
+  - `bash` takes `yield_time_ms` and moves a long-running command to a managed
+    background session; `bash_input` sends stdin, snapshots, or terminates it.
+  - `read_file` defaults to 500 lines.
+- A built-in `muse` provider targets Meta Model API (`muse-spark-1.3`, Responses API).
+- Pi's standard tools (`read`, `write`, `edit`, `grep`, `find`) stay in the registry
+  but are not exposed by default.
+
+## Quick start
+
+```bash
+npm install --ignore-scripts
+npm run build
+export META_API_KEY=...   # Meta Model API key
+node packages/coding-agent/dist/bundle/cli.js --provider muse --model muse-spark-1.3
+# or install the binary:
+npm link -w @earendil-works/pi-coding-agent && pi-muse --provider muse --model muse-spark-1.3
+```
+
+## License and attribution
+
+- The code is **MIT**, inherited from upstream Pi (`LICENSE`, Copyright (c) 2025
+  Mario Zechner) plus this fork's contributions.
+- `packages/coding-agent/src/core/muse-system-prompt.ts` contains a system prompt
+  **extracted from Meta's Muse Code CLI binary**. That text is third-party content, is
+  **not** covered by the MIT license, and remains the property of Meta. It is included
+  only for interoperability and research. Remove or replace it (for example with a
+  custom `~/.pi/SYSTEM.md`) if you are a rights holder or do not want it.
+  Extracted copy: https://github.com/souta-lab/muse-code-system-prompt
+
+---
+
 <p align="center">
   <a href="https://pi.dev">
     <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
