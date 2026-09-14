@@ -10,6 +10,7 @@ import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefi
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
+import { MUSE_SYSTEM_PROMPT } from "./muse-system-prompt.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -30,6 +31,7 @@ import {
 	type ToolName,
 	withFileMutationQueue,
 } from "./tools/index.ts";
+import { MUSE_SUBAGENT_TOOL_NAMES, MUSE_TOOL_NAMES } from "./tools/muse.ts";
 
 // Preserve the pre-0.81 fallback for extensions that construct Agent instances
 // or invoke low-level agent loops without supplying streamFn. Agent core remains
@@ -183,7 +185,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
 
 	if (!resourceLoader) {
-		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+		resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			defaultSystemPrompt: MUSE_SYSTEM_PROMPT,
+		});
 		await resourceLoader.reload();
 		time("resourceLoader.reload");
 	}
@@ -253,7 +260,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	const defaultActiveToolNames: ToolName[] = ["read", "bash", "edit", "write"];
+	const defaultActiveToolNames: ToolName[] = [...MUSE_TOOL_NAMES, ...MUSE_SUBAGENT_TOOL_NAMES] as ToolName[];
 	const configuredDefaultToolNames = settingsManager.getDefaultTools();
 	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const excludedToolNames = options.excludeTools;

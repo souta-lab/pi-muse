@@ -135,7 +135,7 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 		});
 
 		expect(session.getActiveToolNames()).toEqual([]);
-		expect(session.systemPrompt).toContain("Available tools:\n(none)");
+		expect(session.systemPrompt).toContain("You are Muse Code");
 		expect(session.systemPrompt).not.toContain("- read:");
 		session.dispose();
 	});

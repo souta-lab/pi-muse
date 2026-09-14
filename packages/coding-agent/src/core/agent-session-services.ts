@@ -5,6 +5,7 @@ import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { ModelRuntime } from "./model-runtime.ts";
+import { MUSE_SYSTEM_PROMPT } from "./muse-system-prompt.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -146,6 +147,7 @@ export async function createAgentSessionServices(
 		}));
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	const resourceLoader = new DefaultResourceLoader({
+		defaultSystemPrompt: MUSE_SYSTEM_PROMPT,
 		...(options.resourceLoaderOptions ?? {}),
 		cwd,
 		agentDir,

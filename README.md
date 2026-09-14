@@ -51,9 +51,9 @@ Two deliberate deviations:
 ## What is different from upstream Pi
 
 - The CLI binary is renamed to `pi-muse` (`packages/coding-agent/package.json`, `bin`).
-- The default system prompt is the captured Muse Code prompt
-  (`src/core/muse-system-prompt.ts`), applied only for the CLI through
-  `defaultSystemPrompt`, so SDK callers keep Pi's built-in prompt.
+- The captured Muse Code prompt is the default system prompt for **every session** (CLI
+  and SDK), independent of provider and model; `--system-prompt` or a `.pi/SYSTEM.md`
+  file can still override it.
 - The model sees Muse Code's tool set (**14 built-in**): `read_file`, `write_file`,
   `edit_file`, `search`, `bash`, `bash_input`, `read_memory`, `add_memory`, `edit_memory`,
   `read_skill`, `work_status`, `work_stop`, `web_search`, `write_todos` — plus five
@@ -73,6 +73,8 @@ Two deliberate deviations:
   sets for you).
 - Only the cheaper Contributor tier models are registered, and `pi-muse` defaults to
   `muse-spark-1.3-contributor` when no model is chosen.
+- The Muse harness is provider-agnostic: any model runs under the same prompt and tool
+  set, and this is the default for every session rather than an opt-in mode.
 - Pi's standard tools (`read`, `write`, `edit`, `grep`, `find`) stay in the registry but
   are not exposed by default.
 

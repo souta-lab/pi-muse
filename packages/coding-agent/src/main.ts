@@ -47,7 +47,6 @@ import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
-import { MUSE_SYSTEM_PROMPT } from "./core/muse-system-prompt.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
@@ -797,7 +796,6 @@ export async function main(args: string[], options?: MainOptions) {
 				noThemes: parsed.noThemes,
 				noContextFiles: parsed.noContextFiles,
 				systemPrompt: parsed.systemPrompt,
-				defaultSystemPrompt: MUSE_SYSTEM_PROMPT,
 				appendSystemPrompt: [
 					...(parsed.appendSystemPrompt ?? []),
 					[
