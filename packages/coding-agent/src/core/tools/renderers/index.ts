@@ -47,6 +47,10 @@ export function createAllToolRenderers(): Record<ToolName, ToolRenderers> {
 		read_memory: {},
 		add_memory: {},
 		edit_memory: {},
+		read_skill: {},
+		work_status: {},
+		work_stop: {},
+		web_search: {},
 		write_todos: {},
 	};
 }

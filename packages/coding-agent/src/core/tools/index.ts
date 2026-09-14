@@ -116,7 +116,11 @@ import {
 	createMuseToolDefinitions,
 	createReadFileToolDefinition,
 	createReadMemoryToolDefinition,
+	createReadSkillToolDefinition,
 	createSearchToolDefinition,
+	createWebSearchToolDefinition,
+	createWorkStatusToolDefinition,
+	createWorkStopToolDefinition,
 	createWriteFileToolDefinition,
 	createWriteTodosToolDefinition,
 } from "./muse.ts";
@@ -144,6 +148,10 @@ export type ToolName =
 	| "read_memory"
 	| "add_memory"
 	| "edit_memory"
+	| "read_skill"
+	| "work_status"
+	| "work_stop"
+	| "web_search"
 	| "write_todos";
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
@@ -162,6 +170,10 @@ export const allToolNames: Set<ToolName> = new Set([
 	"read_memory",
 	"add_memory",
 	"edit_memory",
+	"read_skill",
+	"work_status",
+	"work_stop",
+	"web_search",
 	"write_todos",
 ]);
 
@@ -210,6 +222,14 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createAddMemoryToolDefinition();
 		case "edit_memory":
 			return createEditMemoryToolDefinition();
+		case "read_skill":
+			return createReadSkillToolDefinition(cwd);
+		case "work_status":
+			return createWorkStatusToolDefinition();
+		case "work_stop":
+			return createWorkStopToolDefinition();
+		case "web_search":
+			return createWebSearchToolDefinition();
 		case "write_todos":
 			return createWriteTodosToolDefinition();
 		default:
@@ -251,6 +271,14 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return wrapToolDefinition(createAddMemoryToolDefinition());
 		case "edit_memory":
 			return wrapToolDefinition(createEditMemoryToolDefinition());
+		case "read_skill":
+			return wrapToolDefinition(createReadSkillToolDefinition(cwd));
+		case "work_status":
+			return wrapToolDefinition(createWorkStatusToolDefinition());
+		case "work_stop":
+			return wrapToolDefinition(createWorkStopToolDefinition());
+		case "web_search":
+			return wrapToolDefinition(createWebSearchToolDefinition());
 		case "write_todos":
 			return wrapToolDefinition(createWriteTodosToolDefinition());
 		default:
@@ -330,6 +358,10 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		read_memory: wrapToolDefinition(createReadMemoryToolDefinition()),
 		add_memory: wrapToolDefinition(createAddMemoryToolDefinition()),
 		edit_memory: wrapToolDefinition(createEditMemoryToolDefinition()),
+		read_skill: wrapToolDefinition(createReadSkillToolDefinition(cwd)),
+		work_status: wrapToolDefinition(createWorkStatusToolDefinition()),
+		work_stop: wrapToolDefinition(createWorkStopToolDefinition()),
+		web_search: wrapToolDefinition(createWebSearchToolDefinition()),
 		write_todos: wrapToolDefinition(createWriteTodosToolDefinition()),
 	};
 }

@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
+import { type Dirent, existsSync } from "node:fs";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { getAgentDir } from "../../config.ts";
@@ -31,6 +31,10 @@ export const MUSE_TOOL_NAMES = [
 	"read_memory",
 	"add_memory",
 	"edit_memory",
+	"read_skill",
+	"work_status",
+	"work_stop",
+	"web_search",
 	"write_todos",
 ] as const;
 
@@ -752,6 +756,160 @@ export function createEditMemoryToolDefinition(): ToolDefinition<any, undefined>
 	};
 }
 
+const readSkillSchema = Type.Object({
+	name: Type.String({ description: "Skill name, id, or display path from the skills catalog." }),
+});
+
+export function createReadSkillToolDefinition(cwd: string): ToolDefinition<any, undefined> {
+	return {
+		name: "read_skill",
+		label: "read_skill",
+		description: "Read one available SKILL.md body as a tool result.",
+		promptSnippet: "Read a skill's SKILL.md",
+		parameters: readSkillSchema,
+		execute(_toolCallId, input: Static<typeof readSkillSchema>) {
+			return (async () => {
+				const roots = [join(cwd, ".pi", "skills"), join(getAgentDir(), "skills")];
+				for (const root of roots) {
+					if (!existsSync(root)) continue;
+					let entries: Dirent[];
+					try {
+						entries = await readdir(root, { recursive: true, withFileTypes: true });
+					} catch {
+						continue;
+					}
+					for (const entry of entries) {
+						if (!entry.isFile() || entry.name !== "SKILL.md") continue;
+						const parent = entry.parentPath ?? root;
+						if (basename(parent) !== input.name && basename(parent, ".md") !== input.name) continue;
+						const body = await readFile(join(parent, "SKILL.md"), "utf-8");
+						return { content: [{ type: "text" as const, text: body }], details: undefined };
+					}
+				}
+				throw new Error(`Skill not found: ${input.name}`);
+			})();
+		},
+	};
+}
+
+const workIdSchema = Type.Object({
+	work_id: Type.String({ description: "Canonical Work ID, e.g. a background bash session id." }),
+});
+
+function resolveWorkSession(workId: string): { id: number; session: MuseShellSession } {
+	const id = Number(workId);
+	if (!Number.isInteger(id)) throw new Error(`Unknown work id: ${workId}`);
+	const session = shellSessions.get(id);
+	if (!session) throw new Error(`Work item not found: ${workId}`);
+	return { id, session };
+}
+
+export function createWorkStatusToolDefinition(): ToolDefinition<any, undefined> {
+	return {
+		name: "work_status",
+		label: "work_status",
+		description: "Read the current state of one Work item by its canonical Work ID (a background bash session id).",
+		promptSnippet: "Check a background work item",
+		parameters: workIdSchema,
+		execute(_toolCallId, input: Static<typeof workIdSchema>) {
+			const { id, session } = resolveWorkSession(input.work_id);
+			const status = session.exited ? "completed" : "running";
+			const exitNote = session.exited && session.exitCode !== null ? `, exit_code ${session.exitCode}` : "";
+			return Promise.resolve({
+				content: [
+					{
+						type: "text" as const,
+						text: `work_id ${id}: ${status}${exitNote}; output_bytes ${session.output.length}`,
+					},
+				],
+				details: undefined,
+			});
+		},
+	};
+}
+
+export function createWorkStopToolDefinition(): ToolDefinition<any, undefined> {
+	return {
+		name: "work_stop",
+		label: "work_stop",
+		description: "Stop one runtime-owned work item by canonical Work ID (terminates the background bash session).",
+		promptSnippet: "Stop a background work item",
+		parameters: workIdSchema,
+		execute(_toolCallId, input: Static<typeof workIdSchema>) {
+			return (async () => {
+				const { id, session } = resolveWorkSession(input.work_id);
+				if (!session.exited && session.child.pid) killProcessTree(session.child.pid);
+				await Promise.race([session.exitedPromise, new Promise<void>((resolve) => setTimeout(resolve, 5000))]);
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Stopped work_id ${id}; status ${session.exited ? "completed" : "stopping"}`,
+						},
+					],
+					details: undefined,
+				};
+			})();
+		},
+	};
+}
+
+const webSearchSchema = Type.Object({
+	query: Type.String({ description: "Search query." }),
+});
+
+export function createWebSearchToolDefinition(): ToolDefinition<any, undefined> {
+	return {
+		name: "web_search",
+		label: "web_search",
+		description: "Search the web and return a short list of source results with title, URL, and snippet.",
+		promptSnippet: "Search the web",
+		parameters: webSearchSchema,
+		execute(_toolCallId, input: Static<typeof webSearchSchema>) {
+			return (async () => {
+				const exa = process.env.EXA_API_KEY;
+				const brave = process.env.BRAVE_API_KEY;
+				if (exa) {
+					const response = await fetch("https://api.exa.ai/search", {
+						method: "POST",
+						headers: { "Content-Type": "application/json", "x-api-key": exa },
+						body: JSON.stringify({ query: input.query, numResults: 5, type: "auto" }),
+					});
+					if (!response.ok) throw new Error(`Exa search failed: ${response.status}`);
+					const payload = (await response.json()) as {
+						results?: Array<{ title?: string; url?: string; text?: string }>;
+					};
+					const lines = (payload.results ?? []).map(
+						(r) => `- ${r.title ?? ""} ${r.url ?? ""}\n  ${(r.text ?? "").slice(0, 200)}`,
+					);
+					return {
+						content: [{ type: "text" as const, text: lines.join("\n") || "No results." }],
+						details: undefined,
+					};
+				}
+				if (brave) {
+					const response = await fetch(
+						`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(input.query)}`,
+						{ headers: { Accept: "application/json", "X-Subscription-Token": brave } },
+					);
+					if (!response.ok) throw new Error(`Brave search failed: ${response.status}`);
+					const payload = (await response.json()) as {
+						web?: { results?: Array<{ title?: string; url?: string; description?: string }> };
+					};
+					const lines = (payload.web?.results ?? [])
+						.slice(0, 5)
+						.map((r) => `- ${r.title ?? ""} ${r.url ?? ""}\n  ${(r.description ?? "").slice(0, 200)}`);
+					return {
+						content: [{ type: "text" as const, text: lines.join("\n") || "No results." }],
+						details: undefined,
+					};
+				}
+				throw new Error("web_search is not configured: set EXA_API_KEY or BRAVE_API_KEY");
+			})();
+		},
+	};
+}
+
 export function createWriteTodosToolDefinition(): ToolDefinition<typeof writeTodosSchema, undefined> {
 	let todos: WriteTodosToolInput["todos"] = [];
 	return {
@@ -800,6 +958,10 @@ export function createMuseToolDefinitions(
 		read_memory: createReadMemoryToolDefinition(),
 		add_memory: createAddMemoryToolDefinition(),
 		edit_memory: createEditMemoryToolDefinition(),
+		read_skill: createReadSkillToolDefinition(cwd),
+		work_status: createWorkStatusToolDefinition(),
+		work_stop: createWorkStopToolDefinition(),
+		web_search: createWebSearchToolDefinition(),
 		write_todos: createWriteTodosToolDefinition(),
 	};
 }
