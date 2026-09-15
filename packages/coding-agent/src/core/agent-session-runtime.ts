@@ -13,6 +13,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
+import { detectInterruptedTurnNotice } from "./session-repair.ts";
 
 /**
  * Result returned by runtime creation.
@@ -79,6 +80,7 @@ export class AgentSessionRuntime {
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
 	private _diagnostics: AgentSessionRuntimeDiagnostic[];
 	private _modelFallbackMessage?: string;
+	private _resumeNotice?: string;
 
 	constructor(
 		_session: AgentSession,
@@ -112,6 +114,15 @@ export class AgentSessionRuntime {
 
 	get modelFallbackMessage(): string | undefined {
 		return this._modelFallbackMessage;
+	}
+
+	/**
+	 * Warning describing a turn that was interrupted mid-tool when the current
+	 * session was resumed, or undefined for fresh/clean resumes. Nothing is
+	 * auto-executed; this only reports what the repair pass detected.
+	 */
+	get resumeNotice(): string | undefined {
+		return this._resumeNotice;
 	}
 
 	setRebindSession(rebindSession?: (session: AgentSession) => Promise<void>): void {
@@ -184,6 +195,24 @@ export class AgentSessionRuntime {
 		this._modelFallbackMessage = result.modelFallbackMessage;
 	}
 
+	/** Report an interrupted previous turn on resume; never executes a tool. */
+	private applyResumeNotice(sessionManager: SessionManager): void {
+		const notice = detectInterruptedTurnNotice(sessionManager.buildSessionContext().messages);
+		this._resumeNotice = notice;
+		if (notice) {
+			this._diagnostics.push({ type: "warning", message: notice });
+		}
+	}
+
+	/**
+	 * Surface an interrupted previous turn for the initial restore path
+	 * (`--continue` / `--session` / `--resume`), where no session switch occurs.
+	 * Reports only; the repair already ran when the session was constructed.
+	 */
+	detectResumeNotice(sessionManager: SessionManager): void {
+		this.applyResumeNotice(sessionManager);
+	}
+
 	private async finishSessionReplacement(withSession?: (ctx: ReplacedSessionContext) => Promise<void>): Promise<void> {
 		if (this.rebindSession) {
 			await this.rebindSession(this.session);
@@ -219,6 +248,7 @@ export class AgentSessionRuntime {
 				projectTrustContext: options?.projectTrustContextFactory?.(sessionManager.getCwd()),
 			}),
 		);
+		this.applyResumeNotice(sessionManager);
 		await this.finishSessionReplacement(options?.withSession);
 		return { cancelled: false };
 	}
@@ -232,6 +262,7 @@ export class AgentSessionRuntime {
 		if (beforeResult.cancelled) {
 			return beforeResult;
 		}
+		this._resumeNotice = undefined;
 
 		const previousSessionFile = this.session.sessionFile;
 		const sessionDir = this.session.sessionManager.getSessionDir();
@@ -268,6 +299,7 @@ export class AgentSessionRuntime {
 		if (beforeResult.cancelled) {
 			return { cancelled: true };
 		}
+		this._resumeNotice = undefined;
 		let targetLeafId: string | null;
 		let selectedText: string | undefined;
 
@@ -399,6 +431,7 @@ export class AgentSessionRuntime {
 				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
 			}),
 		);
+		this.applyResumeNotice(sessionManager);
 		await this.finishSessionReplacement();
 		return { cancelled: false };
 	}
@@ -430,13 +463,15 @@ export async function createAgentSessionRuntime(
 ): Promise<AgentSessionRuntime> {
 	assertSessionCwdExists(options.sessionManager, options.cwd);
 	const result = await createRuntime(options);
-	return new AgentSessionRuntime(
+	const runtime = new AgentSessionRuntime(
 		result.session,
 		result.services,
 		createRuntime,
 		result.diagnostics,
 		result.modelFallbackMessage,
 	);
+	runtime.detectResumeNotice(options.sessionManager);
+	return runtime;
 }
 
 export {

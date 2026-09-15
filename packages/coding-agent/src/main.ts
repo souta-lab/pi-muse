@@ -48,6 +48,7 @@ import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dis
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
+import { resolvePermissionMode } from "./core/permissions/permission-mode.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
@@ -60,7 +61,7 @@ import { assertValidSessionId, SessionManager } from "./core/session-manager.ts"
 import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
-import { MUSE_SUBAGENT_TOOL_NAMES, MUSE_TOOL_NAMES } from "./core/tools/muse.ts";
+import { MUSE_ACTIVE_TOOL_NAMES } from "./core/tools/muse.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { MUSE_DEFAULT_MODEL_ID, MUSE_PROVIDER_ID, OPENCODE_GO_PROVIDER_ID } from "./extensions/muse.ts";
@@ -557,9 +558,7 @@ function buildSessionOptions(
 	} else if (!parsed.noTools && !parsed.noBuiltinTools) {
 		const configuredDefaults = settingsManager.getDefaultTools();
 		options.tools =
-			configuredDefaults && configuredDefaults.length > 0
-				? [...configuredDefaults]
-				: [...MUSE_TOOL_NAMES, ...MUSE_SUBAGENT_TOOL_NAMES];
+			configuredDefaults && configuredDefaults.length > 0 ? [...configuredDefaults] : [...MUSE_ACTIVE_TOOL_NAMES];
 	}
 	if (parsed.excludeTools) {
 		options.excludeTools = [...parsed.excludeTools];
@@ -802,6 +801,12 @@ export async function main(args: string[], options?: MainOptions) {
 			},
 		});
 		const { settingsManager, modelRuntime, resourceLoader } = services;
+		const permissionMode = resolvePermissionMode({
+			disableApproval: parsed.disableApproval,
+			disableSandbox: parsed.disableSandbox,
+			yolo: parsed.yolo,
+			workspaceTrust: settingsManager.isProjectTrusted(),
+		});
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 			...projectTrustDiagnostics,
 			...services.diagnostics,
@@ -852,6 +857,7 @@ export async function main(args: string[], options?: MainOptions) {
 			excludeTools: sessionOptions.excludeTools,
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
+			permissionMode,
 		});
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {

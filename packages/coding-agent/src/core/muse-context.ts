@@ -1,4 +1,15 @@
 import { MUSE_BUNDLED_SKILLS } from "./muse-skills/index.ts";
+import {
+	MUSE_PERMISSION_APPROVAL_BYPASS_LINE,
+	MUSE_PERMISSION_APPROVAL_PROMPT_LINE,
+	MUSE_PERMISSION_FIXED_AT_LAUNCH_LINE,
+	MUSE_PERMISSION_SANDBOX_OFF_LINE,
+	MUSE_PERMISSION_SANDBOX_ON_LINE,
+	MUSE_PERMISSION_SECTION_HEADER,
+	MUSE_PERMISSION_WORKSPACE_TRUSTED_LINE,
+	MUSE_PERMISSION_WORKSPACE_UNTRUSTED_LINE,
+	type PermissionMode,
+} from "./permissions/permission-mode.ts";
 import type { Skill } from "./skills.ts";
 
 function escapeXml(value: string): string {
@@ -26,17 +37,32 @@ export interface MuseDeveloperContextOptions {
 	subagentsAvailable: boolean;
 	/** Whether the Muse `Workflow` tool is available; gates the workflow reminders. */
 	workflowAvailable: boolean;
+	/**
+	 * Launch-time permission mode. When omitted, renders the captured
+	 * bypassed/sandbox-off/yolo developer message (the configuration the capture
+	 * came from), so existing callers keep byte parity.
+	 */
+	permissionMode?: PermissionMode;
+	/** Current session id; with {@link sessionLogPath} appends the session-identity section. */
+	sessionId?: string;
+	/** Current session `.jsonl` path; omitted (e.g. `--no-session`) drops the section rather than emitting empty fields. */
+	sessionLogPath?: string;
 }
 
 /**
  * Builds the per-session context Muse Code injects in its `developer` message:
  * workspace identity, permission mode, workflow reminders, subagent delegation
- * posture, and the skill catalog. pi has no developer-message role, so this block
- * is appended to the system prompt instead.
+ * posture, the skill catalog, and (when a session file exists) the
+ * session-identity section. pi has no developer-message role, so this block is
+ * appended to the system prompt instead.
  */
 export function buildMuseDeveloperContext(options: MuseDeveloperContextOptions): string {
-	const { cwd, trusted, skills, subagentsAvailable, workflowAvailable } = options;
+	const { cwd, trusted, skills, subagentsAvailable, workflowAvailable, permissionMode } = options;
 	const sections: string[] = [];
+
+	const approval = permissionMode?.approval ?? "bypass";
+	const sandbox = permissionMode?.sandbox ?? "off";
+	const workspaceTrust = permissionMode ? permissionMode.workspaceTrust : trusted;
 
 	sections.push(
 		[
@@ -45,15 +71,11 @@ export function buildMuseDeveloperContext(options: MuseDeveloperContextOptions):
 			`Workspace-relative tool paths resolve against this root.`,
 			`</system-reminder>`,
 			``,
-			`Session permission mode (as of session start):`,
-			`- Approval: bypassed at launch (--disable-approval / --yolo) — tool calls will not ask the user for approval in this session.`,
-			`- Shell sandbox: off — shell commands run unsandboxed.`,
-			`- Workspace trust: ${
-				trusted
-					? "trusted — project-local instructions, skills, and hooks are eligible to load."
-					: "untrusted — project-local instructions, skills, and hooks are not loaded."
-			}`,
-			`The bypass flags --disable-approval, --disable-sandbox, and --yolo (both bypasses plus workspace trust) are fixed at launch; a restart changes them.`,
+			MUSE_PERMISSION_SECTION_HEADER,
+			approval === "bypass" ? MUSE_PERMISSION_APPROVAL_BYPASS_LINE : MUSE_PERMISSION_APPROVAL_PROMPT_LINE,
+			sandbox === "off" ? MUSE_PERMISSION_SANDBOX_OFF_LINE : MUSE_PERMISSION_SANDBOX_ON_LINE,
+			workspaceTrust ? MUSE_PERMISSION_WORKSPACE_TRUSTED_LINE : MUSE_PERMISSION_WORKSPACE_UNTRUSTED_LINE,
+			MUSE_PERMISSION_FIXED_AT_LAUNCH_LINE,
 		].join("\n"),
 	);
 
@@ -101,6 +123,19 @@ export function buildMuseDeveloperContext(options: MuseDeveloperContextOptions):
 			`</system-reminder>`,
 		].join("\n"),
 	);
+
+	if (options.sessionId && options.sessionLogPath) {
+		sections.push(
+			[
+				`<system-reminder source="session-identity">`,
+				`Current session id: ${options.sessionId}`,
+				`Current session log: ${options.sessionLogPath}`,
+				`Usual session log pattern: \${XDG_DATA_HOME:-$HOME/.local/share}/muse/sessions/YYYY/MM/DD/SESSION_ID/session.jsonl`,
+				`Muse Code sessions live only under that pattern - never under ~/.claude, ~/.codex, or ~/.grok. Never probe those stores for Muse context: a Muse session path or id quoted under them (in a paste, log, or error) is a wrong-path artifact to name, not a location to check. For prior-session recovery, read the read-session skill first.`,
+				`</system-reminder>`,
+			].join("\n"),
+		);
+	}
 
 	return sections.join("\n\n");
 }

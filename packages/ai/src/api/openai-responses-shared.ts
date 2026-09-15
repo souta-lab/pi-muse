@@ -1,5 +1,6 @@
 import type OpenAI from "openai";
 import type {
+	NamespaceTool,
 	Tool as OpenAITool,
 	ResponseCreateParamsStreaming,
 	ResponseInput,
@@ -118,10 +119,31 @@ export interface OpenAIResponsesStreamOptions {
 
 export interface ConvertResponsesMessagesOptions {
 	includeSystemPrompt?: boolean;
+	/** Per-session context emitted as the leading `developer` input item, replacing the system-prompt item. */
+	developerContext?: string;
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
 	deferredTools?: ReadonlyMap<string, Tool>;
 	deferredToolsMode?: "additional-tools" | "tool-search";
 	toolOptions?: ConvertResponsesToolsOptions;
+	/**
+	 * Emit Muse Code's Responses item encoding: an explicit `type: "message"`
+	 * discriminator on every developer/system/user item, plain-string `content`
+	 * for text-only messages, and assistant tool calls replayed with the
+	 * namespaced `name` (`muse.write_file`) instead of a separate `namespace`
+	 * field. Default: false, leaving other Responses providers byte-identical.
+	 */
+	museResponsesShape?: boolean;
+}
+
+/**
+ * Muse sends role messages as `{ type: "message", role, content: <string> }`.
+ * The OpenAI SDK types string `content` only on the non-discriminated
+ * `EasyInputMessage` variant, so this shape is named explicitly.
+ */
+interface MuseTextMessageItem {
+	type: "message";
+	role: "user" | "system" | "developer";
+	content: string;
 }
 
 export interface ConvertResponsesToolsOptions {
@@ -129,6 +151,12 @@ export interface ConvertResponsesToolsOptions {
 	supportsStrictMode?: boolean;
 	supportsOpenAIGrammarTools?: boolean;
 	deferLoading?: boolean;
+	/**
+	 * Emit the `strict` key on every function tool even when `supportsStrictMode` is
+	 * false. Responses `namespace` groups require each inner function tool to carry
+	 * `strict` explicitly; Muse sends `strict: false` on all 22 captured tools.
+	 */
+	forceStrictKey?: boolean;
 }
 
 // =============================================================================
@@ -172,23 +200,42 @@ export function convertResponsesMessages<TApi extends Api>(
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 
 	const includeSystemPrompt = options?.includeSystemPrompt ?? true;
-	if (includeSystemPrompt && context.systemPrompt) {
+	const museResponsesShape = options?.museResponsesShape === true;
+	const pushRoleMessage = (role: "developer" | "system", text: string): void => {
+		const content = sanitizeSurrogates(text);
+		if (museResponsesShape) {
+			const item: MuseTextMessageItem = { type: "message", role, content };
+			messages.push(item);
+			return;
+		}
+		messages.push({ role, content });
+	};
+
+	if (options?.developerContext !== undefined) {
+		pushRoleMessage("developer", options.developerContext);
+	} else if (includeSystemPrompt && context.systemPrompt) {
 		const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined;
 		const role = model.reasoning && compat?.supportsDeveloperRole !== false ? "developer" : "system";
-		messages.push({
-			role,
-			content: sanitizeSurrogates(context.systemPrompt),
-		});
+		pushRoleMessage(role, context.systemPrompt);
 	}
 
 	let msgIndex = 0;
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
 			if (typeof msg.content === "string") {
-				messages.push({
-					role: "user",
-					content: [{ type: "input_text", text: sanitizeSurrogates(msg.content) }],
-				});
+				if (museResponsesShape) {
+					const item: MuseTextMessageItem = {
+						type: "message",
+						role: "user",
+						content: sanitizeSurrogates(msg.content),
+					};
+					messages.push(item);
+				} else {
+					messages.push({
+						role: "user",
+						content: [{ type: "input_text", text: sanitizeSurrogates(msg.content) }],
+					});
+				}
 			} else {
 				const content: ResponseInputContent[] = msg.content.map((item): ResponseInputContent => {
 					if (item.type === "text") {
@@ -204,10 +251,19 @@ export function convertResponsesMessages<TApi extends Api>(
 					} satisfies ResponseInputImage;
 				});
 				if (content.length === 0) continue;
-				messages.push({
-					role: "user",
-					content,
-				});
+				const hasImages = content.some((part) => part.type === "input_image");
+				if (museResponsesShape && !hasImages) {
+					const text = content.map((part) => (part as ResponseInputText).text).join("");
+					const item: MuseTextMessageItem = { type: "message", role: "user", content: text };
+					messages.push(item);
+				} else if (museResponsesShape) {
+					messages.push({ type: "message", role: "user", content });
+				} else {
+					messages.push({
+						role: "user",
+						content,
+					});
+				}
 			}
 		} else if (msg.role === "assistant") {
 			const output: ResponseInput = [];
@@ -263,30 +319,32 @@ export function convertResponsesMessages<TApi extends Api>(
 					}
 
 					const canReplayNamespace = isSameModel || options?.deferredTools?.has(toolCall.name) === true;
+					const namespacedCallName =
+						canReplayNamespace && museResponsesShape && toolCall.namespace !== undefined
+							? `${toolCall.namespace}.${toolCall.name}`
+							: toolCall.name;
+					const includeNamespaceField =
+						canReplayNamespace && !museResponsesShape && toolCall.namespace !== undefined;
 
 					if (customInputProperty !== undefined) {
 						output.push({
 							type: "custom_tool_call",
 							id: itemId,
 							call_id: callId,
-							name: toolCall.name,
+							name: namespacedCallName,
 							input: sanitizeSurrogates(
 								getGrammarToolInput(toolCall.name, toolCall.arguments, customInputProperty),
 							),
-							...(canReplayNamespace && toolCall.namespace !== undefined
-								? { namespace: toolCall.namespace }
-								: {}),
+							...(includeNamespaceField ? { namespace: toolCall.namespace } : {}),
 						} satisfies ResponseOutputItem);
 					} else {
 						output.push({
 							type: "function_call",
 							id: itemId,
 							call_id: callId,
-							name: toolCall.name,
+							name: namespacedCallName,
 							arguments: JSON.stringify(toolCall.arguments),
-							...(canReplayNamespace && toolCall.namespace !== undefined
-								? { namespace: toolCall.namespace }
-								: {}),
+							...(includeNamespaceField ? { namespace: toolCall.namespace } : {}),
 						});
 					}
 				}
@@ -388,11 +446,31 @@ export function convertResponsesTools(tools: readonly Tool[], options?: ConvertR
 			parameters: getJsonSchemaToolParameters(tool, strict === true) as Record<string, unknown>,
 			...(options?.deferLoading ? { defer_loading: true } : {}),
 		};
-		if (supportsStrictMode) {
+		if (supportsStrictMode || options?.forceStrictKey) {
 			functionTool.strict = strict;
 		}
 		return functionTool as OpenAITool;
 	});
+}
+
+/**
+ * Wraps the converted tools in one Responses `namespace` group. Providers that
+ * ship their whole tool surface as a single namespace (Muse sends `muse.<tool>`)
+ * use this instead of spreading flat function tools.
+ */
+export function convertResponsesNamespaceTools(
+	tools: readonly Tool[],
+	options: ConvertResponsesToolsOptions & { namespace: { name: string; description?: string } },
+): OpenAITool[] {
+	const { namespace: namespaceSpec, ...toolOptions } = options;
+	const converted = convertResponsesTools(tools, { ...toolOptions, forceStrictKey: true });
+	const namespace: NamespaceTool = {
+		type: "namespace",
+		name: namespaceSpec.name,
+		description: namespaceSpec.description ?? "",
+		tools: converted as unknown as NamespaceTool["tools"],
+	};
+	return [namespace];
 }
 
 // =============================================================================
@@ -428,6 +506,22 @@ type ResponsesOutputSlot =
 	| { type: "toolCall"; block: StreamingToolCall; contentIndex: number };
 
 type ToolCallOutputSlot = Extract<ResponsesOutputSlot, { type: "toolCall" }>;
+
+/**
+ * Muse addresses tools inside its namespace group by dotted name
+ * (`muse.write_file`). Split the configured group prefix back into the internal
+ * plain tool name plus namespace so execution resolves and replay stays symmetric.
+ */
+function splitNamespacedToolName<TApi extends Api>(
+	name: string,
+	model: Model<TApi>,
+): { name: string; namespace?: string } {
+	const namespace = (model.compat as { toolNamespace?: { name?: string } } | undefined)?.toolNamespace?.name;
+	if (namespace && name.startsWith(`${namespace}.`)) {
+		return { name: name.slice(namespace.length + 1), namespace };
+	}
+	return { name };
+}
 
 export async function processResponsesStream<TApi extends Api>(
 	openaiStream: AsyncIterable<ResponseStreamEvent>,
@@ -483,12 +577,17 @@ export async function processResponsesStream<TApi extends Api>(
 			return slot;
 		}
 		if (item.type === "function_call") {
+			const resolved = splitNamespacedToolName(item.name, model);
 			const block: StreamingToolCall = {
 				type: "toolCall",
 				id: `${item.call_id}|${item.id}`,
-				name: item.name,
+				name: resolved.name,
 				arguments: {},
-				...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
+				...(item.namespace !== undefined
+					? { namespace: item.namespace }
+					: resolved.namespace !== undefined
+						? { namespace: resolved.namespace }
+						: {}),
 				partialJson: item.arguments || "",
 			};
 			output.content.push(block);
@@ -502,14 +601,19 @@ export async function processResponsesStream<TApi extends Api>(
 			return slot;
 		}
 		if (item.type === "custom_tool_call") {
-			const inputProperty = options?.grammarToolInputProperties?.get(item.name) ?? "input";
+			const resolved = splitNamespacedToolName(item.name, model);
+			const inputProperty = options?.grammarToolInputProperties?.get(resolved.name) ?? "input";
 			const input = item.input || "";
 			const block: StreamingToolCall = {
 				type: "toolCall",
 				id: `${item.call_id}|${item.id}`,
-				name: item.name,
+				name: resolved.name,
 				arguments: { [inputProperty]: input },
-				...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
+				...(item.namespace !== undefined
+					? { namespace: item.namespace }
+					: resolved.namespace !== undefined
+						? { namespace: resolved.namespace }
+						: {}),
 				customInput: {
 					property: inputProperty,
 					jsonBuffer: { input: "", started: false, closed: false },

@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "../src/core/extensions/types.ts";
 import { MUSE_SYSTEM_PROMPT } from "../src/core/muse-system-prompt.ts";
@@ -10,6 +11,8 @@ import {
 	createEditFileToolDefinition,
 	createMuseToolDefinitions,
 	createWriteTodosToolDefinition,
+	MUSE_ACTIVE_TOOL_NAMES,
+	MUSE_SUBAGENT_TOOL_NAMES,
 	MUSE_TOOL_NAMES,
 	onShellSessionExit,
 } from "../src/core/tools/muse.ts";
@@ -39,30 +42,24 @@ afterEach(() => {
 });
 
 describe("muse tools", () => {
-	it("exposes exactly the Muse tool set", () => {
+	it("exposes exactly the Muse tool set in the captured order", () => {
 		const cwd = makeTempDir();
 		const definitions = createMuseToolDefinitions(cwd);
 
 		expect(Object.keys(definitions)).toEqual([...MUSE_TOOL_NAMES]);
 		expect(Object.values(definitions).map((definition) => definition.name)).toEqual([...MUSE_TOOL_NAMES]);
-		expect(MUSE_TOOL_NAMES).toEqual([
-			"workflow",
-			"read_file",
-			"write_file",
-			"edit_file",
-			"search",
-			"bash",
-			"bash_input",
-			"read_memory",
-			"add_memory",
-			"edit_memory",
-			"read_skill",
-			"work_status",
-			"work_stop",
-			"web_search",
-			"write_todos",
-			"snooze_reminder",
+
+		const captured = JSON.parse(
+			readFileSync(fileURLToPath(new URL("./fixtures/muse/REQUEST_SHAPE.json", import.meta.url)), "utf-8"),
+		) as { tools: Array<{ tools: Array<{ name: string }> }> };
+		const capturedOrder = captured.tools[0]!.tools.map((tool) => tool.name);
+		expect([...MUSE_ACTIVE_TOOL_NAMES]).toEqual(capturedOrder);
+		expect(MUSE_ACTIVE_TOOL_NAMES.filter((name) => (MUSE_TOOL_NAMES as readonly string[]).includes(name))).toEqual([
+			...MUSE_TOOL_NAMES,
 		]);
+		expect(
+			MUSE_ACTIVE_TOOL_NAMES.filter((name) => (MUSE_SUBAGENT_TOOL_NAMES as readonly string[]).includes(name)),
+		).toEqual([...MUSE_SUBAGENT_TOOL_NAMES]);
 	});
 
 	it("renames read_file, write_file and search but keeps the pi implementations", () => {
@@ -185,7 +182,7 @@ describe("muse file result formats", () => {
 			undefined,
 			ctx(cwd),
 		);
-		expect((written.content[0] as { text: string }).text).toBe("wrote 5 bytes to b.txt");
+		expect((written.content[0] as { text: string }).text).toBe(`wrote 5 bytes to ${join(cwd, "b.txt")}`);
 
 		const read = await definitions.read_file.execute("r1", { path: "a.txt" }, undefined, undefined, ctx(cwd));
 		const text = (read.content[0] as { text: string }).text;

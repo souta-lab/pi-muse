@@ -107,6 +107,59 @@ export interface CustomEntry<T = unknown> extends SessionEntryBase {
 	data?: T;
 }
 
+/**
+ * Reserved customType values for append-only run/tool bookkeeping.
+ *
+ * These entries are written through appendCustomEntry() and, like all plain
+ * custom entries, never participate in LLM context (buildSessionContext ignores
+ * them). They let a resumed session detect a turn that was interrupted mid-tool
+ * without replaying anything.
+ */
+export const RUN_START_CUSTOM_TYPE = "pi.run_start";
+export const RUN_END_CUSTOM_TYPE = "pi.run_end";
+export const TOOL_INTENT_CUSTOM_TYPE = "pi.tool_intent";
+export const TOOL_RESULT_CUSTOM_TYPE = "pi.tool_result";
+
+/** Why a run boundary was written. */
+export type RunEndReason = "completed" | "aborted" | "error";
+
+/** Recorded before a tool executes. */
+export interface ToolIntentData {
+	toolCallId: string;
+	toolName: string;
+	runId: string;
+}
+
+/** Recorded after a tool executes. `isError` mirrors the tool result, never a fake success. */
+export interface ToolResultData {
+	toolCallId: string;
+	toolName: string;
+	runId: string;
+	isError: boolean;
+}
+
+/** Data stored on `pi.run_start` / `pi.run_end` entries. */
+export interface RunBoundaryData {
+	runId: string;
+	reason?: RunEndReason;
+}
+
+/** A tool intent that has no matching tool result — the turn was interrupted mid-execution. */
+export interface InterruptedToolIntent {
+	toolCallId: string;
+	toolName: string;
+	runId: string;
+}
+
+/** Run boundaries and tool intents/outcomes recorded for one session. */
+export interface ToolExecutionLog {
+	runs: Array<{ kind: "start" | "end"; data: RunBoundaryData }>;
+	intents: ToolIntentData[];
+	results: ToolResultData[];
+	/** Intents with no `pi.tool_result` for the same toolCallId, in append order. */
+	interrupted: InterruptedToolIntent[];
+}
+
 /** Label entry for user-defined bookmarks/markers on entries. */
 export interface LabelEntry extends SessionEntryBase {
 	type: "label";
@@ -203,6 +256,7 @@ export type ReadonlySessionManager = Pick<
 	| "getEntries"
 	| "getTree"
 	| "getSessionName"
+	| "getToolExecutionLog"
 >;
 
 function createSessionId(): string {
@@ -320,6 +374,64 @@ export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEnt
 		}
 	}
 	return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function parseToolIntent(data: unknown): ToolIntentData | undefined {
+	if (!isRecord(data)) return undefined;
+	const { toolCallId, toolName, runId } = data;
+	if (typeof toolCallId !== "string" || typeof toolName !== "string" || typeof runId !== "string") return undefined;
+	return { toolCallId, toolName, runId };
+}
+
+function parseToolResult(data: unknown): ToolResultData | undefined {
+	if (!isRecord(data)) return undefined;
+	const { toolCallId, toolName, runId, isError } = data;
+	if (typeof toolCallId !== "string" || typeof toolName !== "string" || typeof runId !== "string") return undefined;
+	if (typeof isError !== "boolean") return undefined;
+	return { toolCallId, toolName, runId, isError };
+}
+
+/**
+ * Read reserved run/tool bookkeeping entries. Pure: no I/O, malformed data is skipped.
+ * An intent is reported as interrupted when no `pi.tool_result` shares its toolCallId.
+ */
+export function readToolExecutionLog(entries: SessionEntry[]): ToolExecutionLog {
+	const runs: ToolExecutionLog["runs"] = [];
+	const intents: ToolIntentData[] = [];
+	const results: ToolResultData[] = [];
+	const resolvedIds = new Set<string>();
+
+	for (const entry of entries) {
+		if (entry.type !== "custom") continue;
+		if (entry.customType === RUN_START_CUSTOM_TYPE || entry.customType === RUN_END_CUSTOM_TYPE) {
+			const data = isRecord(entry.data) ? entry.data : undefined;
+			if (data && typeof data.runId === "string") {
+				runs.push({
+					kind: entry.customType === RUN_START_CUSTOM_TYPE ? "start" : "end",
+					data: {
+						runId: data.runId,
+						reason: entry.customType === RUN_END_CUSTOM_TYPE ? (data.reason as RunEndReason) : undefined,
+					},
+				});
+			}
+		} else if (entry.customType === TOOL_INTENT_CUSTOM_TYPE) {
+			const intent = parseToolIntent(entry.data);
+			if (intent) intents.push(intent);
+		} else if (entry.customType === TOOL_RESULT_CUSTOM_TYPE) {
+			const result = parseToolResult(entry.data);
+			if (result) {
+				results.push(result);
+				resolvedIds.add(result.toolCallId);
+			}
+		}
+	}
+
+	const interrupted = intents.filter((intent) => !resolvedIds.has(intent.toolCallId));
+	return { runs, intents, results, interrupted };
 }
 
 function buildEntryIndex(entries: SessionEntry[], byId?: Map<string, SessionEntry>): Map<string, SessionEntry> {
@@ -1144,6 +1256,34 @@ export class SessionManager {
 		};
 		this._appendEntry(entry);
 		return entry.id;
+	}
+
+	/** Append a reserved run start boundary. Returns entry id. */
+	appendRunStart(runId: string): string {
+		return this.appendCustomEntry(RUN_START_CUSTOM_TYPE, { runId } satisfies RunBoundaryData);
+	}
+
+	/** Append a reserved run end boundary. Returns entry id. */
+	appendRunEnd(runId: string, reason: RunEndReason): string {
+		return this.appendCustomEntry(RUN_END_CUSTOM_TYPE, { runId, reason } satisfies RunBoundaryData);
+	}
+
+	/** Record a tool intent before execution. Returns entry id. */
+	appendToolIntent(data: ToolIntentData): string {
+		return this.appendCustomEntry(TOOL_INTENT_CUSTOM_TYPE, data);
+	}
+
+	/**
+	 * Record a tool outcome after execution. `data.isError` must mirror the real
+	 * tool result; callers must not record a success for an interrupted tool.
+	 */
+	appendToolResult(data: ToolResultData): string {
+		return this.appendCustomEntry(TOOL_RESULT_CUSTOM_TYPE, data);
+	}
+
+	/** Read reserved run/tool bookkeeping for this session. */
+	getToolExecutionLog(): ToolExecutionLog {
+		return readToolExecutionLog(this.getEntries());
 	}
 
 	/** Append a session info entry (e.g., display name). Returns entry id. */

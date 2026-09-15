@@ -1,0 +1,190 @@
+{
+	"name": "tool-call",
+	"description": "Two-turn canned Responses stream: turn 1 calls write_file (namespaced muse.write_file), turn 2 finishes with a short text answer. The proxy serves turn 2 for the follow-up request, so the second outbound request from each client (function_call + function_call_output + context) can be compared.",
+	"prompt": "Create a file named parity.txt containing exactly 'hello from the parity harness', then reply with one short sentence.",
+	"toolCall": {
+		"name": "write_file",
+		"namespace": "muse",
+		"arguments": "{\"path\":\"parity.txt\",\"content\":\"hello from the parity harness\\n\"}"
+	},
+	"turns": [
+		{
+			"label": "write_file call",
+			"events": [
+				{
+					"type": "response.created",
+					"sequence_number": 0,
+					"response": {
+						"id": "resp_parity_tool",
+						"object": "response",
+						"created_at": 1780531401,
+						"model": "muse-spark-1.3-contributor",
+						"status": "in_progress",
+						"output": []
+					}
+				},
+				{
+					"type": "response.in_progress",
+					"sequence_number": 1,
+					"response": { "id": "resp_parity_tool", "status": "in_progress", "output": [] }
+				},
+				{
+					"type": "response.output_item.added",
+					"sequence_number": 2,
+					"output_index": 0,
+					"item": {
+						"type": "function_call",
+						"id": "fc_parity_write",
+						"call_id": "call_parity_write",
+						"name": "write_file",
+						"namespace": "muse",
+						"arguments": "",
+						"status": "in_progress"
+					}
+				},
+				{
+					"type": "response.function_call_arguments.delta",
+					"sequence_number": 3,
+					"output_index": 0,
+					"item_id": "fc_parity_write",
+					"delta": "{\"path\":\"parity.txt\","
+				},
+				{
+					"type": "response.function_call_arguments.delta",
+					"sequence_number": 4,
+					"output_index": 0,
+					"item_id": "fc_parity_write",
+					"delta": "\"content\":\"hello from the parity harness\\n\"}"
+				},
+				{
+					"type": "response.function_call_arguments.done",
+					"sequence_number": 5,
+					"output_index": 0,
+					"item_id": "fc_parity_write",
+					"arguments": "{\"path\":\"parity.txt\",\"content\":\"hello from the parity harness\\n\"}"
+				},
+				{
+					"type": "response.output_item.done",
+					"sequence_number": 6,
+					"output_index": 0,
+					"item": {
+						"type": "function_call",
+						"id": "fc_parity_write",
+						"call_id": "call_parity_write",
+						"name": "write_file",
+						"namespace": "muse",
+						"arguments": "{\"path\":\"parity.txt\",\"content\":\"hello from the parity harness\\n\"}",
+						"status": "completed"
+					}
+				},
+				{
+					"type": "response.completed",
+					"sequence_number": 7,
+					"response": {
+						"id": "resp_parity_tool",
+						"status": "completed",
+						"output": [
+							{
+								"type": "function_call",
+								"id": "fc_parity_write",
+								"call_id": "call_parity_write",
+								"name": "write_file",
+								"namespace": "muse",
+								"arguments": "{\"path\":\"parity.txt\",\"content\":\"hello from the parity harness\\n\"}",
+								"status": "completed"
+							}
+						],
+						"usage": {
+							"input_tokens": 1234,
+							"output_tokens": 24,
+							"total_tokens": 1258,
+							"input_tokens_details": { "cached_tokens": 0 },
+							"output_tokens_details": { "reasoning_tokens": 0 }
+						}
+					}
+				}
+			]
+		},
+		{
+			"label": "final text after tool result",
+			"events": [
+				{
+					"type": "response.created",
+					"sequence_number": 0,
+					"response": {
+						"id": "resp_parity_tool_final",
+						"object": "response",
+						"created_at": 1780531402,
+						"model": "muse-spark-1.3-contributor",
+						"status": "in_progress",
+						"output": []
+					}
+				},
+				{
+					"type": "response.output_item.added",
+					"sequence_number": 1,
+					"output_index": 0,
+					"item": {
+						"type": "message",
+						"id": "msg_parity_tool_final",
+						"role": "assistant",
+						"status": "in_progress",
+						"content": []
+					}
+				},
+				{
+					"type": "response.output_text.delta",
+					"sequence_number": 2,
+					"output_index": 0,
+					"item_id": "msg_parity_tool_final",
+					"content_index": 0,
+					"delta": "Wrote parity.txt."
+				},
+				{
+					"type": "response.output_text.done",
+					"sequence_number": 3,
+					"output_index": 0,
+					"item_id": "msg_parity_tool_final",
+					"content_index": 0,
+					"text": "Wrote parity.txt."
+				},
+				{
+					"type": "response.output_item.done",
+					"sequence_number": 4,
+					"output_index": 0,
+					"item": {
+						"type": "message",
+						"id": "msg_parity_tool_final",
+						"role": "assistant",
+						"status": "completed",
+						"content": [{ "type": "output_text", "text": "Wrote parity.txt.", "annotations": [] }]
+					}
+				},
+				{
+					"type": "response.completed",
+					"sequence_number": 5,
+					"response": {
+						"id": "resp_parity_tool_final",
+						"status": "completed",
+						"output": [
+							{
+								"type": "message",
+								"id": "msg_parity_tool_final",
+								"role": "assistant",
+								"status": "completed",
+								"content": [{ "type": "output_text", "text": "Wrote parity.txt.", "annotations": [] }]
+							}
+						],
+						"usage": {
+							"input_tokens": 1300,
+							"output_tokens": 5,
+							"total_tokens": 1305,
+							"input_tokens_details": { "cached_tokens": 0 },
+							"output_tokens_details": { "reasoning_tokens": 0 }
+						}
+					}
+				}
+			]
+		}
+	]
+}

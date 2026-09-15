@@ -22,6 +22,12 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
+	/**
+	 * Muse harness session. Muse carries the workspace root and skill catalog in its
+	 * developer message, so the base prompt must not also append the cwd line or the
+	 * pi skills block.
+	 */
+	museHarness?: boolean;
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -35,6 +41,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
+		museHarness,
 	} = options;
 	const promptCwd = cwd.replace(/\\/g, "/");
 
@@ -62,12 +69,16 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 			prompt += "</project_context>\n";
 		}
 
-		// Append skills when a tool capable of reading their files is available.
-		if (skillFileReadTool && skills.length > 0) {
-			prompt += formatSkillsForPrompt(skills, skillFileReadTool);
-		}
+		// Muse carries the workspace root and skill catalog in its developer message,
+		// so the Muse base prompt must not also append either suffix.
+		if (!museHarness) {
+			// Append skills when a tool capable of reading their files is available.
+			if (skillFileReadTool && skills.length > 0) {
+				prompt += formatSkillsForPrompt(skills, skillFileReadTool);
+			}
 
-		prompt += `\nCurrent working directory: ${promptCwd}\n`;
+			prompt += `\nCurrent working directory: ${promptCwd}\n`;
+		}
 
 		return prompt;
 	}
@@ -157,12 +168,16 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		prompt += "</project_context>\n";
 	}
 
-	// Append skills when a tool capable of reading their files is available.
-	if (skillFileReadTool && skills.length > 0) {
-		prompt += formatSkillsForPrompt(skills, skillFileReadTool);
-	}
+	// Muse carries the workspace root and skill catalog in its developer message,
+	// so the Muse base prompt must not also append either suffix.
+	if (!museHarness) {
+		// Append skills when a tool capable of reading their files is available.
+		if (skillFileReadTool && skills.length > 0) {
+			prompt += formatSkillsForPrompt(skills, skillFileReadTool);
+		}
 
-	prompt += `\nCurrent working directory: ${promptCwd}`;
+		prompt += `\nCurrent working directory: ${promptCwd}`;
+	}
 
 	return prompt;
 }

@@ -2,6 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AssistantMessage, Model, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
 import {
@@ -10,6 +12,7 @@ import {
 	createSnoozeReminderToolDefinition,
 	resetReminderSnoozes,
 } from "../src/core/tools/muse.ts";
+import { detectPtyStrategy, planPtyCommand, resolvePtyKind } from "../src/utils/shell.ts";
 
 const tempDirs: string[] = [];
 
@@ -82,8 +85,113 @@ describe("write_file", () => {
 			undefined,
 			ctx(cwd),
 		);
-		expect((result.content[0] as { text: string }).text).toBe("wrote 5 bytes to nested/dir/out.txt");
+		expect((result.content[0] as { text: string }).text).toBe(`wrote 5 bytes to ${join(cwd, "nested/dir/out.txt")}`);
 		expect(readFileSync(join(cwd, "nested/dir/out.txt"), "utf-8")).toBe("hello");
+	});
+});
+
+const SSE_COMPLETION_BODY = [
+	'data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_write_file_parity","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,"input_tokens_details":{"cached_tokens":0}}}}',
+	"",
+	"data: [DONE]",
+	"",
+].join("\n");
+
+const WRITE_FILE_PARITY_CONTENT = "hello from the parity harness\n";
+
+function museResponsesModel(): Model<"openai-responses"> {
+	return {
+		id: "muse-spark-1.3-contributor",
+		name: "Muse Spark 1.3 Contributor",
+		api: "openai-responses",
+		provider: "muse",
+		baseUrl: "https://api.meta.ai/v1",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
+		contextWindow: 1_007_997,
+		maxTokens: 32_768,
+	};
+}
+
+describe("write_file result path form (live Muse parity)", () => {
+	it("reports the resolved absolute path, matching the live muse capture", async () => {
+		const cwd = makeTempDir();
+		const defs = createMuseToolDefinitions(cwd);
+		const result = await defs.write_file.execute(
+			"w",
+			{ path: "parity.txt", content: WRITE_FILE_PARITY_CONTENT },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		expect((result.content[0] as { text: string }).text).toBe(`wrote 30 bytes to ${join(cwd, "parity.txt")}`);
+	});
+
+	it("carries that absolute-path string verbatim into the follow-up function_call_output", async () => {
+		const cwd = makeTempDir();
+		const defs = createMuseToolDefinitions(cwd);
+		const result = await defs.write_file.execute(
+			"w",
+			{ path: "parity.txt", content: WRITE_FILE_PARITY_CONTENT },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		const output = (result.content[0] as { text: string }).text;
+
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "call_parity_write",
+			name: "write_file",
+			arguments: { path: "parity.txt", content: WRITE_FILE_PARITY_CONTENT },
+		};
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [toolCall],
+			api: "openai-responses",
+			provider: "muse",
+			model: "muse-spark-1.3-contributor",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 0,
+		};
+		const toolResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "call_parity_write",
+			toolName: "write_file",
+			content: [{ type: "text", text: output }],
+			isError: false,
+			timestamp: 0,
+		};
+
+		let captured: Record<string, unknown> | undefined;
+		const stream = streamSimple(
+			museResponsesModel(),
+			{ messages: [{ role: "user", content: "create parity.txt", timestamp: 0 }, assistant, toolResult] },
+			{
+				apiKey: "parity-test-key",
+				onPayload: (params) => {
+					captured = params as Record<string, unknown>;
+					return params;
+				},
+				fetch: async () =>
+					new Response(SSE_COMPLETION_BODY, { status: 200, headers: { "content-type": "text/event-stream" } }),
+			},
+		);
+		await stream.result();
+
+		const input = (captured?.input ?? []) as Array<{ type?: string; call_id?: string; output?: unknown }>;
+		const functionCallOutput = input.find((item) => item.type === "function_call_output");
+		expect(functionCallOutput?.call_id).toBe("call_parity_write");
+		expect(functionCallOutput?.output).toBe(`wrote 30 bytes to ${join(cwd, "parity.txt")}`);
 	});
 });
 
@@ -186,6 +294,147 @@ describe("bash", () => {
 		const defs = createMuseToolDefinitions(cwd);
 		const result = await defs.bash_input.execute("i", { session_id: 999999 }, undefined, undefined, ctx(cwd));
 		expect((result.content[0] as { text: string }).text).toContain("No running bash session");
+	});
+});
+
+describe("bash PTY platform strategy", () => {
+	const shellPath = "/bin/bash";
+	const shellArgs = ["-c"];
+	const command = "printf hi";
+
+	it("maps each platform to its PTY mechanism", () => {
+		expect(resolvePtyKind("linux")).toBe("gnu-script");
+		expect(resolvePtyKind("darwin")).toBe("bsd-script");
+		expect(resolvePtyKind("freebsd")).toBe("bsd-script");
+		expect(resolvePtyKind("win32")).toBe("winpty");
+		expect(resolvePtyKind("aix")).toBe("pipes");
+	});
+
+	it("builds the Linux util-linux script argv", () => {
+		const plan = planPtyCommand({
+			kind: "gnu-script",
+			ptyPath: "/usr/bin/script",
+			shellPath,
+			shellArgs,
+			command,
+		});
+		expect(plan).toEqual({
+			kind: "gnu-script",
+			command: "/usr/bin/script",
+			args: ["-q", "-e", "-c", "/bin/bash -c 'printf hi'", "/dev/null"],
+			commandOnStdin: false,
+		});
+	});
+
+	it("quotes commands embedded in the GNU -c string", () => {
+		const plan = planPtyCommand({
+			kind: "gnu-script",
+			ptyPath: "/usr/bin/script",
+			shellPath,
+			shellArgs: ["-lc"],
+			command: "echo it's",
+		});
+		expect(plan.args[3]).toBe(`/bin/bash -lc 'echo it'\\''s'`);
+	});
+
+	it("builds the BSD script argv with the command after /dev/null", () => {
+		const plan = planPtyCommand({
+			kind: "bsd-script",
+			ptyPath: "/usr/bin/script",
+			shellPath,
+			shellArgs,
+			command,
+		});
+		expect(plan).toEqual({
+			kind: "bsd-script",
+			command: "/usr/bin/script",
+			args: ["-q", "/dev/null", "/bin/bash", "-c", "printf hi"],
+			commandOnStdin: false,
+		});
+	});
+
+	it("builds the winpty argv with allow-non-tty for piped stdio", () => {
+		const plan = planPtyCommand({
+			kind: "winpty",
+			ptyPath: "C:\\msys64\\usr\\bin\\winpty.exe",
+			shellPath: "C:\\Program Files\\Git\\bin\\bash.exe",
+			shellArgs,
+			command,
+		});
+		expect(plan).toEqual({
+			kind: "winpty",
+			command: "C:\\msys64\\usr\\bin\\winpty.exe",
+			args: ["-Xallow-non-tty", "--", "C:\\Program Files\\Git\\bin\\bash.exe", "-c", "printf hi"],
+			commandOnStdin: false,
+		});
+	});
+
+	it("falls back to piped stdio argv without a PTY helper", () => {
+		const plan = planPtyCommand({ kind: "pipes", ptyPath: null, shellPath, shellArgs, command });
+		expect(plan).toEqual({ kind: "pipes", command: "/bin/bash", args: ["-c", "printf hi"], commandOnStdin: false });
+	});
+
+	it("keeps the command off argv when the shell reads it from stdin", () => {
+		const plan = planPtyCommand({ kind: "pipes", ptyPath: null, shellPath, shellArgs: ["-s"], command: null });
+		expect(plan).toEqual({ kind: "pipes", command: "/bin/bash", args: ["-s"], commandOnStdin: true });
+	});
+
+	it("detects helpers per platform with injectable file probes", () => {
+		const onlyLinuxScript = (path: string) => path === "/usr/bin/script";
+		expect(detectPtyStrategy("linux", onlyLinuxScript)).toEqual({ kind: "gnu-script", path: "/usr/bin/script" });
+		expect(detectPtyStrategy("darwin", onlyLinuxScript)).toEqual({ kind: "bsd-script", path: "/usr/bin/script" });
+		expect(detectPtyStrategy("darwin", () => false)).toEqual({ kind: "pipes", path: null });
+		expect(detectPtyStrategy("win32", () => false)).toEqual({ kind: "pipes", path: null });
+	});
+
+	it("finds winpty.exe on PATH on Windows", () => {
+		const previousPath = process.env.PATH;
+		const fakeDir = join(tmpdir(), "fake-msys", "usr", "bin");
+		process.env.PATH = fakeDir;
+		try {
+			expect(detectPtyStrategy("win32", (path) => path === join(fakeDir, "winpty.exe"))).toEqual({
+				kind: "winpty",
+				path: join(fakeDir, "winpty.exe"),
+			});
+		} finally {
+			if (previousPath === undefined) delete process.env.PATH;
+			else process.env.PATH = previousPath;
+		}
+	});
+
+	it("runs commands on a real PTY when the host platform has one", async () => {
+		if (detectPtyStrategy().kind === "pipes") return;
+		const cwd = makeTempDir();
+		const defs = createMuseToolDefinitions(cwd);
+		const result = await defs.bash.execute(
+			"b",
+			{ command: "if [ -t 0 ] && [ -t 1 ]; then echo is-pty; else echo is-pipe; fi", description: "check pty" },
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		const parsed = JSON.parse((result.content[0] as { text: string }).text) as { output: string; exit_code: number };
+		expect(parsed.exit_code).toBe(0);
+		expect(parsed.output).toContain("is-pty");
+	});
+
+	it("keeps the JSON record on the piped fallback when tty is false", async () => {
+		const cwd = makeTempDir();
+		const defs = createMuseToolDefinitions(cwd);
+		const result = await defs.bash.execute(
+			"b",
+			{
+				command: "if [ -t 0 ] || [ -t 1 ]; then echo is-pty; else echo is-pipe; fi",
+				description: "check pipe",
+				tty: false,
+			},
+			undefined,
+			undefined,
+			ctx(cwd),
+		);
+		const parsed = JSON.parse((result.content[0] as { text: string }).text) as { output: string; exit_code: number };
+		expect(parsed.exit_code).toBe(0);
+		expect(parsed.output).toContain("is-pipe");
 	});
 });
 
@@ -317,7 +566,7 @@ describe("memory offset window", () => {
 });
 
 describe("description parity with the official Muse captures", () => {
-	it("matches every official description after replacing muse.<toolname> with <toolname>", () => {
+	it("matches every official description byte-for-byte, including muse.<tool> references", () => {
 		const official = JSON.parse(readFileSync(museFixture("descriptions.json"), "utf-8")) as Record<string, string>;
 		const definitions = createMuseToolDefinitions(makeTempDir());
 		const ours: Record<string, string> = { snooze_reminder: createSnoozeReminderToolDefinition().description };
@@ -327,13 +576,13 @@ describe("description parity with the official Muse captures", () => {
 		let ourChars = 0;
 		let officialChars = 0;
 		for (const [name, description] of Object.entries(ours)) {
-			const expected = (official[name] ?? "").replaceAll("muse.", "");
+			const expected = official[name] ?? "";
 			expect(expected.length, `official description missing for ${name}`).toBeGreaterThan(0);
 			expect(description, `description mismatch for ${name}`).toBe(expected);
 			ourChars += description.length;
 			officialChars += expected.length;
 		}
-		expect(ourChars / officialChars).toBeGreaterThanOrEqual(0.99);
+		expect(ourChars).toBe(officialChars);
 	});
 });
 

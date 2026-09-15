@@ -1,0 +1,62 @@
+{
+	"object": "list",
+	"data": [
+		{
+			"id": "muse-spark-1.3-contributor",
+			"object": "model",
+			"created": 1788320726,
+			"owned_by": "meta",
+			"metadata": {
+				"muse-code": {
+					"name": "muse-spark-1.3-contributor",
+					"family": "avocado",
+					"release_date": "2026-09-02",
+					"is_hidden": false,
+					"attachment": true,
+					"reasoning": true,
+					"temperature": false,
+					"tool_call": true,
+					"modalities": {
+						"input": ["text", "image"],
+						"output": ["text"]
+					},
+					"limit": {
+						"context": 1007997,
+						"output": 128000
+					},
+					"options": {
+						"reasoningEffort": "high",
+						"forceReasoning": true,
+						"include": ["reasoning.encrypted_content"],
+						"temperature": 0.9,
+						"top_p": 0.9
+					},
+					"description": "Your content, including inter-session messages, may be used for product improvement.",
+					"variants": {
+						"minimal": {
+							"reasoningEffort": "minimal"
+						},
+						"low": {
+							"reasoningEffort": "low"
+						},
+						"medium": {
+							"reasoningEffort": "medium"
+						},
+						"high": {
+							"reasoningEffort": "high"
+						},
+						"xhigh": {
+							"reasoningEffort": "xhigh",
+							"selector": {
+								"description": "Use this for deepest analysis and complex fixes."
+							}
+						},
+						"max": {
+							"reasoningEffort": "max"
+						}
+					}
+				}
+			}
+		}
+	]
+}

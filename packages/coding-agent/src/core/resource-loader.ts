@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import chalk from "chalk";
 import { CONFIG_DIR_NAME } from "../config.ts";
@@ -49,6 +50,23 @@ export interface ResourceLoader {
 	getAppendSystemPromptSources(): Array<{ path: string }>;
 	extendResources(paths: ResourceExtensionPaths): void;
 	reload(options?: ResourceLoaderReloadOptions): Promise<void>;
+}
+
+/**
+ * Package directory of the bundled `@tintinweb/pi-subagents` extension, so the
+ * Muse subagent tools (and the `subagent-delegation` developer-context section)
+ * are present without a user install step whenever the Muse subagents bridge is
+ * loaded. Its `pi.extensions` manifest (`./src/index.ts`) is resolved by the
+ * loader's normal directory path. Resolved through Node's module resolution so
+ * it works regardless of cwd; a missing package (for example a pruned production
+ * tree) is skipped silently, leaving the bridge to degrade to no subagent tools.
+ */
+function resolveBundledSubagentsExtensionPath(): string | undefined {
+	try {
+		return dirname(createRequire(import.meta.url).resolve("@tintinweb/pi-subagents/package.json"));
+	} catch {
+		return undefined;
+	}
 }
 
 function resolvePromptInput(input: string | undefined, description: string): string | undefined {
@@ -264,7 +282,13 @@ export class DefaultResourceLoader implements ResourceLoader {
 			agentDir: this.agentDir,
 			settingsManager: this.settingsManager,
 		});
-		this.additionalExtensionPaths = options.additionalExtensionPaths ?? [];
+		const museSubagentsBridge = options.extensionFactories?.some(
+			(extension) => typeof extension !== "function" && extension.name === "muse-subagents",
+		);
+		const bundledSubagentsPath = museSubagentsBridge ? resolveBundledSubagentsExtensionPath() : undefined;
+		this.additionalExtensionPaths = bundledSubagentsPath
+			? [...(options.additionalExtensionPaths ?? []), bundledSubagentsPath]
+			: (options.additionalExtensionPaths ?? []);
 		this.additionalSkillPaths = options.additionalSkillPaths ?? [];
 		this.additionalPromptTemplatePaths = options.additionalPromptTemplatePaths ?? [];
 		this.additionalThemePaths = options.additionalThemePaths ?? [];

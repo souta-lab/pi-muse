@@ -22,15 +22,25 @@ import { headersToRecord } from "../utils/headers.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
-import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
+import {
+	convertResponsesMessages,
+	convertResponsesNamespaceTools,
+	convertResponsesTools,
+	processResponsesStream,
+} from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
 const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
 // OpenAI Responses rejects max_output_tokens below 16: https://github.com/earendil-works/pi/issues/6265
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
+
+/** `OpenAIResponsesCompat` with every capability default resolved; `toolNamespace` stays optional. */
+type ResolvedOpenAIResponsesCompat = Required<Omit<OpenAIResponsesCompat, "toolNamespace">> &
+	Pick<OpenAIResponsesCompat, "toolNamespace">;
 
 function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean {
 	if (!headers) return false;
@@ -65,7 +75,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 	return "short";
 }
 
-function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCompat> {
+function getCompat(model: Model<"openai-responses">): ResolvedOpenAIResponsesCompat {
 	return {
 		supportsDeveloperRole: model.compat?.supportsDeveloperRole ?? true,
 		sessionAffinityFormat: model.compat?.sessionAffinityFormat ?? detectSessionAffinityFormat(model),
@@ -76,11 +86,12 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 		supportsToolSearch: model.compat?.supportsToolSearch ?? false,
 		supportsExplicitPromptCacheMode: model.compat?.supportsExplicitPromptCacheMode ?? false,
 		supportsMaxOutputTokens: model.compat?.supportsMaxOutputTokens ?? true,
+		supportsInstructionsField: model.compat?.supportsInstructionsField ?? false,
 	};
 }
 
 function getPromptCacheRetention(
-	compat: Required<OpenAIResponsesCompat>,
+	compat: ResolvedOpenAIResponsesCompat,
 	cacheRetention: CacheRetention,
 ): "24h" | undefined {
 	return cacheRetention === "long" && compat.supportsLongCacheRetention && !compat.supportsExplicitPromptCacheMode
@@ -89,7 +100,7 @@ function getPromptCacheRetention(
 }
 
 function getPromptCacheOptions(
-	compat: Required<OpenAIResponsesCompat>,
+	compat: ResolvedOpenAIResponsesCompat,
 	cacheRetention: CacheRetention,
 ): { mode?: "explicit"; ttl?: "30m" } | undefined {
 	if (!compat.supportsExplicitPromptCacheMode) return undefined;
@@ -275,7 +286,7 @@ function buildParams(
 	model: Model<"openai-responses">,
 	context: Context,
 	options: OpenAIResponsesOptions | undefined,
-	compat: Required<OpenAIResponsesCompat> = getCompat(model),
+	compat: ResolvedOpenAIResponsesCompat = getCompat(model),
 	grammarToolInputProperties: ReadonlyMap<string, string> = createGrammarToolInputProperties(
 		context.tools,
 		compat.supportsOpenAIGrammarTools,
@@ -287,7 +298,11 @@ function buildParams(
 			? "tool-search"
 			: undefined;
 	const toolPlacement = splitDeferredTools(context, deferredToolsMode !== undefined);
+	const instructions = compat.supportsInstructionsField ? context.instructions : undefined;
 	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
+		includeSystemPrompt: instructions === undefined,
+		developerContext: instructions === undefined ? undefined : context.developerContext,
+		museResponsesShape: compat.supportsInstructionsField,
 		grammarToolInputProperties,
 		deferredTools: toolPlacement.deferred,
 		deferredToolsMode,
@@ -310,6 +325,10 @@ function buildParams(
 		store: false,
 	};
 
+	if (instructions !== undefined) {
+		params.instructions = sanitizeSurrogates(instructions);
+	}
+
 	if (options?.maxTokens && compat.supportsMaxOutputTokens) {
 		params.max_output_tokens = Math.max(options.maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
 	}
@@ -323,10 +342,14 @@ function buildParams(
 	}
 
 	if (toolPlacement.immediate.length > 0) {
-		params.tools = convertResponsesTools(toolPlacement.immediate, {
+		const toolOptions = {
 			supportsStrictMode: compat.supportsStrictMode,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
-		});
+		};
+		const namespace = model.compat?.toolNamespace;
+		params.tools = namespace
+			? convertResponsesNamespaceTools(toolPlacement.immediate, { ...toolOptions, namespace })
+			: convertResponsesTools(toolPlacement.immediate, toolOptions);
 	}
 
 	if (options?.toolChoice !== undefined) {

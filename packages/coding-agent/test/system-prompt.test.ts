@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { MUSE_SYSTEM_PROMPT } from "../src/core/muse-system-prompt.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
@@ -165,6 +166,38 @@ describe("buildSystemPrompt", () => {
 			});
 
 			expect(prompt).not.toContain("<available_skills>");
+		});
+	});
+
+	describe("Muse harness gating", () => {
+		const cwd = "/tmp/opencode/muse-work";
+		const shared = {
+			selectedTools: ["read_file", "bash"],
+			contextFiles: [],
+			skills: [testSkill],
+			cwd,
+		};
+
+		describe.each([
+			{ name: "custom prompt", customPrompt: MUSE_SYSTEM_PROMPT },
+			{ name: "default prompt", customPrompt: undefined },
+		])("$name", ({ customPrompt }) => {
+			test("leaves the Muse base prompt free of the cwd line and skills block", () => {
+				const prompt = buildSystemPrompt({ ...shared, customPrompt, museHarness: true });
+
+				expect(prompt).not.toContain("<available_skills>");
+				expect(prompt).not.toContain(`Current working directory: ${cwd}`);
+				if (customPrompt) {
+					expect(prompt).toBe(MUSE_SYSTEM_PROMPT);
+				}
+			});
+
+			test("still appends the cwd line and skills block outside the Muse harness", () => {
+				const prompt = buildSystemPrompt({ ...shared, customPrompt, museHarness: false });
+
+				expect(prompt).toContain("<available_skills>");
+				expect(prompt).toContain(`Current working directory: ${cwd}`);
+			});
 		});
 	});
 });

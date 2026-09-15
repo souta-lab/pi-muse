@@ -84,6 +84,10 @@ function toProviderModels(models: MuseModelSpec[], supportsImages: boolean) {
 		cost: model.cost,
 		contextWindow: model.contextWindow,
 		maxTokens: model.maxTokens,
+		compat: {
+			supportsInstructionsField: true,
+			toolNamespace: { name: "muse", description: "Muse Code tool set." },
+		},
 	}));
 }
 

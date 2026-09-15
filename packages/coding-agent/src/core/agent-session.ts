@@ -85,6 +85,7 @@ import {
 	type SessionCompactFailedEvent,
 	type SessionStartEvent,
 	type ShutdownHandler,
+	type ToolCallEventResult,
 	type ToolDefinition,
 	type ToolExecutionEndEvent,
 	type ToolExecutionStartEvent,
@@ -100,7 +101,10 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { buildMuseDeveloperContext } from "./muse-context.ts";
+import { createApprovalGate } from "./permissions/approval-gate.ts";
+import type { PermissionMode } from "./permissions/permission-mode.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
+import { collectReminderPrompt, createMuseReminderRegistry, type ReminderRegistry } from "./reminders/index.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import { exportSessionToJsonl } from "./session-export.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
@@ -111,7 +115,7 @@ import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
-import { MUSE_SUBAGENT_TOOL_NAMES, MUSE_TOOL_NAMES } from "./tools/muse.ts";
+import { MUSE_ACTIVE_TOOL_NAMES } from "./tools/muse.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
@@ -229,6 +233,13 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/**
+	 * Immutable launch-time permission mode resolved from the CLI flags plus the
+	 * resolved project trust. When omitted (SDK callers and tests that do not opt
+	 * in) the session keeps the captured Muse developer-message default and the
+	 * approval gate falls back to prompting.
+	 */
+	permissionMode?: PermissionMode;
 }
 
 export interface ExtensionBindings {
@@ -301,6 +312,20 @@ function estimateMessagesTokens(messages: AgentMessage[]): number {
 	return tokens;
 }
 
+function describeApprovalDetail(args: unknown): string | undefined {
+	if (!args || typeof args !== "object") {
+		return undefined;
+	}
+	const record = args as Record<string, unknown>;
+	if (typeof record.command === "string" && record.command.length > 0) {
+		return record.command;
+	}
+	if (typeof record.path === "string" && record.path.length > 0) {
+		return record.path;
+	}
+	return undefined;
+}
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -358,6 +383,14 @@ export class AgentSession {
 	private _excludedToolNames?: Set<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
+	/**
+	 * Launch-time permission mode exactly as supplied by the caller. `undefined`
+	 * means "not wired for this session": the captured Muse developer-message
+	 * permission block stays byte-identical and no approval gate is installed,
+	 * preserving pre-approval behaviour for direct SDK/test sessions.
+	 */
+	private readonly _permissionMode?: PermissionMode;
+	private readonly _reminderRegistry: ReminderRegistry = createMuseReminderRegistry();
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
@@ -378,6 +411,10 @@ export class AgentSession {
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	private _systemPromptOverride?: string;
+	// Split of the merged prompt for providers that carry the base prompt in the Responses
+	// `instructions` field and the Muse developer context as a leading input item.
+	private _baseSystemPromptText = "";
+	private _museDeveloperContext = "";
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -394,12 +431,14 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._permissionMode = config.permissionMode;
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
 		this._installAgentNextTurnRefresh();
+		this._installReminderContextTransform();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -409,6 +448,16 @@ export class AgentSession {
 
 	get modelRuntime(): ModelRuntime {
 		return this._modelRuntime;
+	}
+
+	/** Per-session reminder registry advanced once per model request turn. */
+	get reminders(): ReminderRegistry {
+		return this._reminderRegistry;
+	}
+
+	/** Immutable launch-time approval/permission mode, or undefined when unwired. */
+	get permissionMode(): PermissionMode | undefined {
+		return this._permissionMode;
 	}
 
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
@@ -484,23 +533,26 @@ export class AgentSession {
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
 			const runner = this._extensionRunner;
-			if (!runner.hasHandlers("tool_call")) {
-				return undefined;
+			const hookResult = runner.hasHandlers("tool_call")
+				? await this._emitToolCallHook(runner, toolCall, args)
+				: undefined;
+			if (hookResult?.block) {
+				return hookResult;
 			}
 
-			try {
-				return await runner.emitToolCall({
-					type: "tool_call",
-					toolName: toolCall.name,
-					toolCallId: toolCall.id,
-					input: args as Record<string, unknown>,
-				});
-			} catch (err) {
-				if (err instanceof Error) {
-					throw err;
-				}
-				throw new Error(`Extension failed, blocking execution: ${String(err)}`);
+			// Launch-time approval gate, active only when a mode was wired at launch.
+			// `bash_input` is spawn-covered: its covering `bash` spawn already crossed
+			// this same gate, so a live PTY is never re-prompted per write or per
+			// interrupt. A headless session denies it because no approved spawn could
+			// have produced its session id.
+			if (this._permissionMode === undefined) {
+				return hookResult;
 			}
+			const denial = await this._createApprovalGate(this._permissionMode)({
+				toolName: toolCall.name,
+				detail: describeApprovalDetail(args),
+			});
+			return denial ?? hookResult;
 		};
 
 		this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
@@ -534,6 +586,60 @@ export class AgentSession {
 				isError: hookResult?.isError ?? isError,
 				usage: hookResult?.usage,
 			};
+		};
+	}
+
+	private async _emitToolCallHook(
+		runner: ExtensionRunner,
+		toolCall: { name: string; id: string },
+		args: unknown,
+	): Promise<ToolCallEventResult | undefined> {
+		try {
+			return await runner.emitToolCall({
+				type: "tool_call",
+				toolName: toolCall.name,
+				toolCallId: toolCall.id,
+				input: args as Record<string, unknown>,
+			});
+		} catch (err) {
+			if (err instanceof Error) {
+				throw err;
+			}
+			throw new Error(`Extension failed, blocking execution: ${String(err)}`);
+		}
+	}
+
+	private _createApprovalGate(mode: PermissionMode) {
+		const uiContext = this._extensionUIContext;
+		return createApprovalGate({
+			mode,
+			hasUI: uiContext !== undefined,
+			confirm: uiContext ? (question) => uiContext.confirm("Approval required", question) : undefined,
+		});
+	}
+
+	/**
+	 * Injection point for the per-turn Muse reminder subsystem. `transformContext`
+	 * runs once at the start of every model request turn, so calling the registry
+	 * exactly once here advances the step clock once and never delivers the same
+	 * reminder twice in a turn. The reminder rides as a request-local user message
+	 * alongside (never replacing) the developer context, so it is not persisted.
+	 */
+	private _installReminderContextTransform(): void {
+		const previousTransform = this.agent.transformContext;
+		this.agent.transformContext = async (messages, signal) => {
+			const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
+			if (!this._toolRegistry.has("read_file")) {
+				return transformed;
+			}
+			const { prompt } = collectReminderPrompt(this._reminderRegistry);
+			if (!prompt) {
+				return transformed;
+			}
+			return [
+				...transformed,
+				{ role: "user", content: [{ type: "text" as const, text: prompt }], timestamp: Date.now() },
+			];
 		};
 	}
 
@@ -572,6 +678,8 @@ export class AgentSession {
 				context: {
 					...nextContext,
 					systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
+					instructions: this.agent.state.instructions,
+					developerContext: this.agent.state.developerContext,
 					tools: this.agent.state.tools.slice(),
 				},
 				model: this.agent.state.model,
@@ -979,7 +1087,7 @@ export class AgentSession {
 
 		// Rebuild base system prompt with new tool set
 		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
-		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+		this._syncAgentSystemPrompt();
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1082,6 +1190,7 @@ export class AgentSession {
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
+		const museHarness = this._toolRegistry.has("read_file");
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
@@ -1092,21 +1201,41 @@ export class AgentSession {
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
+			museHarness,
 		};
 		const basePrompt = buildSystemPrompt(this._baseSystemPromptOptions);
+		this._baseSystemPromptText = basePrompt;
 		// Muse delivers this developer context together with its own tool surface, so a
 		// session without the Muse tools (a Pi-native or test-harness session) keeps the
 		// plain prompt instead of a skill catalog and workflow policy it cannot act on.
-		const developerContext = this._toolRegistry.has("read_file")
+		const developerContext = museHarness
 			? buildMuseDeveloperContext({
 					cwd: this._cwd,
 					trusted: this.settingsManager.isProjectTrusted(),
 					skills: loadedSkills,
 					subagentsAvailable: this._toolRegistry.has("subagent_spawn"),
 					workflowAvailable: this._toolRegistry.has("workflow"),
+					permissionMode: this._permissionMode,
+					sessionId: this.sessionId,
+					sessionLogPath: this.sessionFile,
 				})
 			: "";
+		this._museDeveloperContext = developerContext;
 		return developerContext ? `${basePrompt}\n\n${developerContext}` : basePrompt;
+	}
+
+	/**
+	 * Applies the current base/override prompt to the agent, keeping the merged public
+	 * prompt while exposing the base prompt and developer context for providers that
+	 * transport them separately. An override replaces the whole prompt, so it rides alone
+	 * in the `instructions` field with no developer item.
+	 */
+	private _syncAgentSystemPrompt(): void {
+		const override = this._systemPromptOverride;
+		this.agent.state.systemPrompt = override ?? this._baseSystemPrompt;
+		this.agent.state.instructions = override ?? this._baseSystemPromptText;
+		this.agent.state.developerContext =
+			override === undefined && this._museDeveloperContext ? this._museDeveloperContext : undefined;
 	}
 
 	// =========================================================================
@@ -1321,11 +1450,11 @@ export class AgentSession {
 			// Apply extension-modified system prompt, or reset to base
 			if (result?.systemPrompt !== undefined) {
 				this._systemPromptOverride = result.systemPrompt;
-				this.agent.state.systemPrompt = result.systemPrompt;
+				this._syncAgentSystemPrompt();
 			} else {
 				// Ensure we're using the base prompt (in case previous turn had modifications)
 				this._systemPromptOverride = undefined;
-				this.agent.state.systemPrompt = this._baseSystemPrompt;
+				this._syncAgentSystemPrompt();
 			}
 		} catch (error) {
 			preflightResult?.(false);
@@ -2527,7 +2656,7 @@ export class AgentSession {
 
 		this._resourceLoader.extendResources(extensionPaths);
 		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
-		this.agent.state.systemPrompt = this._baseSystemPrompt;
+		this._syncAgentSystemPrompt();
 	}
 
 	private buildExtensionResourcePaths(entries: Array<{ path: string; extensionPath: string }>): Array<{
@@ -2779,8 +2908,12 @@ export class AgentSession {
 		).filter((name) => isAllowedTool(name));
 
 		if (allowedToolNames) {
-			for (const toolName of this._toolRegistry.keys()) {
-				if (allowedToolNames.has(toolName)) {
+			// The configured allowlist is ordered, and the model receives tools in this
+			// order, so rebuild from the allowlist instead of appending late-registered
+			// tools (for example extension tools registered on session_start) at the end.
+			nextActiveToolNames.length = 0;
+			for (const toolName of allowedToolNames) {
+				if (isAllowedTool(toolName) && this._toolRegistry.has(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}
 			}
@@ -2845,7 +2978,7 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: [...MUSE_TOOL_NAMES, ...MUSE_SUBAGENT_TOOL_NAMES];
+			: [...MUSE_ACTIVE_TOOL_NAMES];
 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,

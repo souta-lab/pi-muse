@@ -523,6 +523,18 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 
 export interface Context {
 	systemPrompt?: string;
+	/**
+	 * System prompt carried in the OpenAI Responses `instructions` field instead of an
+	 * input item. Only honored by providers whose model compat enables the split; other
+	 * providers keep reading {@link Context.systemPrompt}.
+	 */
+	instructions?: string;
+	/**
+	 * Per-session context sent as a leading `developer` input item. Only honored by
+	 * providers whose model compat enables the split; other providers keep reading
+	 * {@link Context.systemPrompt}.
+	 */
+	developerContext?: string;
 	messages: Message[];
 	tools?: Tool[];
 }
@@ -662,6 +674,17 @@ export interface OpenAIResponsesCompat {
 	supportsExplicitPromptCacheMode?: boolean;
 	/** Whether the provider accepts the `max_output_tokens` parameter. Some Codex-protocol gateways reject it. Default: true. */
 	supportsMaxOutputTokens?: boolean;
+	/**
+	 * Whether the system prompt rides in the Responses `instructions` field, separately
+	 * from the {@link Context.developerContext} leading `developer` input item, instead of
+	 * being merged into one input item. Default: false.
+	 */
+	supportsInstructionsField?: boolean;
+	/**
+	 * When set, emit all tools inside one Responses `namespace` group with this name and
+	 * description instead of flat function tools. Default: undefined (flat tools).
+	 */
+	toolNamespace?: { name: string; description?: string };
 }
 
 /** Compatibility settings for Anthropic Messages-compatible APIs. */

@@ -1,0 +1,4 @@
+# Generated MITM CA, per-host leaf certificates and captured logs.
+# Never commit the CA private key.
+.certs/
+*.log

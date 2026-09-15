@@ -36,38 +36,89 @@
  *     wall-clock timeout that bounds a runaway script.
  *   - Structured `not_admitted` results once the call cap is reached, and
  *     child-runner failures resolved as ordinary results with `error_kind`.
+ *   - Inline JSON-schema validation of child results: `schema` is checked
+ *     against the closed type/enum/required/properties/items subset with
+ *     4 KiB, depth-16, and 16-entry bounds before the child launches, and a
+ *     malformed schema resolves that slot with `error_kind: "invalid_schema"`.
+ *     An admitted result whose `data` violates the schema records
+ *     `schema_invalid` and resolves to `null` at the script boundary, matching
+ *     the V1 "third rejection" terminal behavior (this runner does not re-prompt
+ *     for corrected calls, so the first failed validation is terminal).
+ *   - `phase()` progress grouping: markers are grouped by title into
+ *     `details.phaseGroups`, and an optional per-call `phase` on
+ *     agent/pipeline/parallel requests assigns that call to a group without
+ *     racing the global `phase()` state.
+ *   - `isolation` worktree isolation: when the child runs through the
+ *     in-process pi-subagents runner published at
+ *     `Symbol.for("pi-muse:subagent-runner")`, an affirmative isolation request
+ *     is forwarded to `spawnAndWait` as `isolation: "worktree"`. When the
+ *     fallback SDK runner is used (no pi-subagents), the tool creates a detached
+ *     `git worktree` under a temp root itself; a clean or ignored-only worktree
+ *     is removed after the child settles, while tracked changes, non-ignored
+ *     untracked files, or a changed HEAD retain it and the outcome is reported
+ *     as `result.isolation`. A missing git binary / non-git workspace resolves
+ *     with `error_kind: "isolation_unavailable"`, and every other isolation
+ *     shape resolves with `error_kind: "invalid_isolation"`.
+ *   - Per-call `model`/`effort`: forwarded to the selected runner. The
+ *     in-process pi-subagents runner resolves a model id against
+ *     `ctx.modelRegistry` and passes the mapped `thinkingLevel`; the SDK
+ *     fallback applies them through `resolveChildLaunchOptions` (model resolved
+ *     by id against the parent route/registry, `effort` mapped to the thinking
+ *     level); an unresolvable model resolves with `error_kind:
+ *     "model_not_found"`. The parent route (model + thinking level) is passed to
+ *     the runner for inheritance.
+ *   - `agentType` Agent Definition resolution: the request's `agentType`
+ *     (default `general-purpose`) is forwarded as the pi-subagents `type`, so
+ *     pi-subagents resolves the Agent Definition (embedded defaults plus user
+ *     agents under `.pi/agents`, `.agents/agents`, and the global agents dir)
+ *     and applies its prompt and tools. With the SDK fallback the field is inert
+ *     and the child uses the built-in identity.
+ *   - In-process child runner: when muse-subagents has reached pi-subagents
+ *     (`spawnAndWait` present in the manager registry) it publishes a runner at
+ *     `Symbol.for("pi-muse:subagent-runner")`; the tool reads that symbol (no
+ *     import cycle), prefers it over the SDK runner, and clamps its concurrency
+ *     to the manager's `maxConcurrent()` when that reports a positive limit.
+ *     When the symbol is absent the SDK runner is used unchanged.
+ *   - Name-only saved-workflow lookup: with no `script`/`scriptPath`/
+ *     `resumeFromRunId`, `name` resolves a module in the project
+ *     `.agents`/`.codex`/`.claude` workflows directories or the user config
+ *     `workflows` directory; an unknown name fails with the discovered names.
+ *     The pi-muse convention is `<dir>/<name>.mjs` (then `<name>.js`); the
+ *     directory list is overridable through `workflowRegistryDirs` for tests.
  *
  * Official Workflow API V1 surface — deferred (explicitly not implemented):
- *   - `name`-only lookup of a saved workflow in the local registry
- *     (`.agents`/`.codex`/`.claude` workflows directories or the user config
- *     workflows directory); a name-only call resolves to `not_implemented`.
- *   - `agentType` Agent Definition resolution: the field is forwarded to the
- *     configured child runner and ignored by the default runner, so children
- *     use the built-in identity and the session default tools.
- *   - Per-call `model`/`effort` overrides: forwarded but not applied; children
- *     inherit the parent route.
- *   - `isolation: true` worktree isolation: forwarded but not applied;
- *     children run in the parent workspace.
- *   - Inline JSON-schema validation of child results (`schema` is forwarded to
- *     the runner and not enforced here).
- *   - `phase()` progress grouping in the UI: markers are recorded, not grouped.
  *   - Muse's re-execute-the-module-as-child-results-arrive runner model; this
- *     tool executes the module once and recovers via the journaled prefix.
+ *     tool executes the module once and recovers via the journaled prefix. The
+ *     re-entrant runner lives in Muse's Workflow owner process behind the same
+ *     RPC bus; `worker_threads` can only run a module to completion once, so
+ *     faithful re-execution needs that owner-side coordinator.
  *   - Provider reliability policy, token ceilings, and retained-session or
  *     workspace prerequisites beyond the runner bounds listed above.
+ *     `host.budget.total` is wired from `runWorkflowWorker`'s `budgetTotal`,
+ *     which is hard-coded to `null`; `Settings`/`SettingsManager`
+ *     (src/core/settings-manager.ts) has no workflow token-ceiling field (only
+ *     `thinkingBudgets`), and adding one would require editing that file, so
+ *     there is no user-configured ceiling to plumb.
  *
  * The per-run `workflow-choice` / `workflow-cookbook` policy reminders are
  * injected by the orchestrator's system prompt, not by this tool.
  */
 
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
-import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
-import { type Static, Type } from "typebox";
+import type { AgentToolUpdateCallback, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { type Static, type TSchema, Type } from "typebox";
+import { Value } from "typebox/value";
+import { getAgentDir } from "../../config.ts";
+import type { InProcessChildRunner, InProcessChildRunRequest } from "../../extensions/muse-subagents.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
+import type { ModelRegistry } from "../model-registry.ts";
 import { createAgentSession } from "../sdk.ts";
 import { SessionManager } from "../session-manager.ts";
 
@@ -80,6 +131,18 @@ const DEFAULT_MAX_CONCURRENT_CHILDREN = 16;
 const DEFAULT_MAX_TOTAL_AGENT_CALLS = 1000;
 const DEFAULT_MAX_PROGRESS_MARKERS = 512;
 const SCRIPT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
+// Workflow V1 inline-schema subset bounds. The accepted keyword set is closed
+// to type/enum/required/properties/items; any other key is rejected.
+const INLINE_SCHEMA_MAX_BYTES = 4096;
+const INLINE_SCHEMA_MAX_DEPTH = 16;
+const INLINE_SCHEMA_MAX_ENTRIES = 16;
+const INLINE_SCHEMA_TYPES = ["object", "array", "string", "number", "integer", "boolean", "null"] as const;
+const INLINE_SCHEMA_KEYWORDS = new Set(["type", "enum", "required", "properties", "items"]);
+const WORKFLOW_EFFORT_LEVELS = new Set<string>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** muse-subagents publishes its in-process runner here; read-only, no import cycle. */
+const IN_PROCESS_CHILD_RUNNER_SYMBOL = Symbol.for("pi-muse:subagent-runner");
 
 /**
  * The official Workflow V1 tool schema, verbatim from Muse's tool spec.
@@ -149,6 +212,26 @@ export interface WorkflowChildRequest {
 	effort: string | null;
 }
 
+/** Isolation outcome attached to a child result when the request asked for a worktree. */
+export interface WorkflowIsolationOutcome {
+	worktree_path: string;
+	retained: boolean;
+	reason?: string;
+}
+
+/** A retained or transient worktree handed to the child runner. */
+export interface WorkflowIsolationContext {
+	worktreePath: string;
+	baseCwd: string;
+}
+
+/** Parent route forwarded to the child runner so children can inherit or override it. */
+export interface WorkflowParentRoute {
+	model?: Model<Api> | undefined;
+	thinkingLevel?: ThinkingLevel | undefined;
+	findModel?: ((modelId: string) => Model<Api> | undefined) | undefined;
+}
+
 /** A child agent result. Missing fields are normalized before the script sees them. */
 export interface WorkflowChildResult {
 	ref?: string | null;
@@ -160,6 +243,7 @@ export interface WorkflowChildResult {
 	error_kind?: string | null;
 	error?: { code: string; message?: string };
 	usage?: { totalTokens?: number };
+	isolation?: WorkflowIsolationOutcome | null;
 }
 
 interface NormalizedChildResult {
@@ -172,6 +256,8 @@ interface NormalizedChildResult {
 	error_kind: string | null;
 	error?: { code: string; message?: string };
 	usage?: { totalTokens?: number };
+	isolation?: WorkflowIsolationOutcome | null;
+	schema_invalid?: boolean;
 }
 
 export interface WorkflowChildRunnerContext {
@@ -179,6 +265,8 @@ export interface WorkflowChildRunnerContext {
 	runId: string;
 	callIndex: number;
 	signal: AbortSignal | undefined;
+	isolation: WorkflowIsolationContext | null;
+	parent: WorkflowParentRoute | null;
 }
 
 /** Starts one child agent and resolves its settled result. Never rejects on child failure. */
@@ -202,6 +290,23 @@ export interface WorkflowToolOptions {
 	agentCallTimeoutMs?: number;
 	/** Retained `log`/`phase` markers per run. Workflow V1 cap: 512. */
 	maxProgressMarkers?: number;
+	/** Directories searched for saved workflows by `name`. Defaults to the project/user registry. */
+	workflowRegistryDirs?: string[];
+	/** Temp root for isolated child worktrees. Defaults to `<tmpdir>/pi-muse-worktrees`. */
+	worktreeRoot?: string;
+	/** Parent model available to children for inheritance and `model` override resolution. */
+	parentModel?: Model<Api>;
+	/** Parent thinking level available to children for inheritance. */
+	parentThinkingLevel?: ThinkingLevel;
+	/** Model-id resolver used for per-call `model` overrides. */
+	findModel?: (modelId: string) => Model<Api> | undefined;
+}
+
+/** One progress group assembled from `phase()` markers and per-call `phase` requests. */
+export interface WorkflowPhaseGroup {
+	title: string;
+	logs: string[];
+	agentCalls: number;
 }
 
 export interface WorkflowRunError {
@@ -233,6 +338,7 @@ export interface WorkflowToolDetails {
 	durationMs: number;
 	logs: string[];
 	phases: string[];
+	phaseGroups: WorkflowPhaseGroup[];
 }
 
 interface WorkflowJournalEntry {
@@ -393,7 +499,10 @@ async function agent(first, second) {
   const index = callIndex++;
   const hash = hashRequest(request);
   const memo = index < journal.length ? journal[index] : null;
-  if (memo && memo.hash === hash) return memo.result;
+  if (memo && memo.hash === hash) {
+    if (memo.result && memo.result.schema_invalid === true) return null;
+    return memo.result;
+  }
   if (index >= totalCallCap) {
     return {
       ref: null,
@@ -404,6 +513,7 @@ async function agent(first, second) {
     };
   }
   const result = await withSlot(() => callRunner(index, request));
+  if (result && typeof result === "object" && result.schema_invalid === true) return null;
   if (result && typeof result === "object" && result.usage && typeof result.usage.totalTokens === "number") {
     usedTokens += result.usage.totalTokens;
   }
@@ -539,13 +649,82 @@ function fail(code, error) {
 })();
 `;
 
-/** Default runner: one in-process SDK agent session per child, disposed after it settles. */
+/** Read the in-process runner muse-subagents publishes, if it is present and shaped correctly. */
+export function readInProcessChildRunner(): InProcessChildRunner | undefined {
+	const value: unknown = (globalThis as Record<symbol, unknown>)[IN_PROCESS_CHILD_RUNNER_SYMBOL];
+	if (typeof value !== "object" || value === null) return undefined;
+	if (typeof (value as { runChild?: unknown }).runChild !== "function") return undefined;
+	return value as InProcessChildRunner;
+}
+
+/** Adapt the in-process pi-subagents runner to the workflow child-runner contract. */
+export function createInProcessChildRunner(handle: InProcessChildRunner): WorkflowChildRunner {
+	return async (request, context) => {
+		const ref = `pi-subagents:${context.runId}:${context.callIndex}`;
+		const isolation = resolveWorkflowIsolationShape(request.isolation);
+		const runRequest: InProcessChildRunRequest = {
+			type:
+				typeof request.agentType === "string" && request.agentType.trim().length > 0
+					? request.agentType
+					: "general-purpose",
+			prompt: request.input,
+			model: request.model,
+			effort: request.effort,
+			// A tool-prepared worktree already isolates the child; requesting a
+			// second pi-subagents worktree over it would nest two copies.
+			isolation: context.isolation === null && isolation.ok ? isolation.enabled : false,
+			cwd: context.isolation?.worktreePath ?? context.cwd,
+		};
+		try {
+			const result = await handle.runChild(runRequest);
+			return {
+				ref,
+				text: result.text,
+				summary: summarizeChildText(result.text),
+				data: result.data,
+				error_kind: result.error_kind,
+				error: result.error,
+				usage: result.usage,
+			};
+		} catch (error) {
+			return {
+				ref,
+				text: "",
+				error_kind: "runner_error",
+				error: { code: "runner_error", message: errorMessage(error) },
+			};
+		}
+	};
+}
+
+/** Default runner: the in-process pi-subagents runner when published, else one SDK session per child. */
 export const defaultWorkflowChildRunner: WorkflowChildRunner = async (request, context) => {
+	const inProcess = readInProcessChildRunner();
+	if (inProcess) return createInProcessChildRunner(inProcess)(request, context);
+	return runWorkflowChildViaSdk(request, context);
+};
+
+async function runWorkflowChildViaSdk(
+	request: WorkflowChildRequest,
+	context: WorkflowChildRunnerContext,
+): Promise<WorkflowChildResult> {
 	const fallbackRef = `wf:${context.runId}:${context.callIndex}`;
+	const launch = resolveChildLaunchOptions(request, context.parent);
+	if (!launch.ok) {
+		return {
+			ref: fallbackRef,
+			text: "",
+			error_kind: launch.error_kind,
+			error: { code: launch.error_kind, message: launch.message },
+		};
+	}
+	const childCwd = context.isolation?.worktreePath ?? context.cwd;
 	const { session } = await createAgentSession({
-		cwd: context.cwd,
-		sessionManager: SessionManager.inMemory(context.cwd),
+		cwd: childCwd,
+		sessionManager: SessionManager.inMemory(childCwd),
 		excludeTools: ["workflow"],
+		model: launch.model,
+		thinkingLevel: launch.thinkingLevel,
 	});
 	const onAbort = (): void => session.dispose();
 	try {
@@ -558,7 +737,7 @@ export const defaultWorkflowChildRunner: WorkflowChildRunner = async (request, c
 		context.signal?.removeEventListener("abort", onAbort);
 		session.dispose();
 	}
-};
+}
 
 function summarizeChildText(text: string): string | undefined {
 	const firstLine = text.split("\n").find((line) => line.trim().length > 0);
@@ -617,7 +796,313 @@ function normalizeChildResult(value: WorkflowChildResult, fallbackRef: string): 
 		error_kind: typeof value.error_kind === "string" ? value.error_kind : null,
 		error: value.error,
 		usage: value.usage,
+		isolation: value.isolation ?? undefined,
 	};
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+type InlineSchemaValidation = { ok: true; schema: TSchema } | { ok: false; message: string };
+
+function buildInlineTypebox(schema: Record<string, unknown>, depth: number): InlineSchemaValidation {
+	if (depth > INLINE_SCHEMA_MAX_DEPTH) {
+		return { ok: false, message: `inline schema exceeds the depth-${INLINE_SCHEMA_MAX_DEPTH} bound` };
+	}
+	for (const key of Object.keys(schema)) {
+		if (!INLINE_SCHEMA_KEYWORDS.has(key)) {
+			return { ok: false, message: `inline schema uses unsupported keyword "${key}"` };
+		}
+	}
+	const typeValue = schema.type;
+	if (typeValue !== undefined) {
+		if (
+			typeof typeValue !== "string" ||
+			!INLINE_SCHEMA_TYPES.includes(typeValue as (typeof INLINE_SCHEMA_TYPES)[number])
+		) {
+			return { ok: false, message: `inline schema \`type\` must be one of ${INLINE_SCHEMA_TYPES.join(", ")}` };
+		}
+	}
+	const enumValue = schema.enum;
+	if (enumValue !== undefined) {
+		if (!Array.isArray(enumValue) || enumValue.length === 0 || enumValue.length > INLINE_SCHEMA_MAX_ENTRIES) {
+			return {
+				ok: false,
+				message: `inline schema \`enum\` must be a non-empty array of at most ${INLINE_SCHEMA_MAX_ENTRIES} entries`,
+			};
+		}
+		for (const entry of enumValue) {
+			if (entry === null || typeof entry !== "object") continue;
+			return { ok: false, message: "inline schema `enum` accepts only primitive entries" };
+		}
+	}
+	let required: string[] | undefined;
+	if (schema.required !== undefined) {
+		if (
+			!Array.isArray(schema.required) ||
+			schema.required.length > INLINE_SCHEMA_MAX_ENTRIES ||
+			schema.required.some((entry) => typeof entry !== "string")
+		) {
+			return {
+				ok: false,
+				message: `inline schema \`required\` must be an array of at most ${INLINE_SCHEMA_MAX_ENTRIES} strings`,
+			};
+		}
+		required = schema.required as string[];
+	}
+	const properties = new Map<string, TSchema>();
+	if (schema.properties !== undefined) {
+		if (typeValue !== "object") {
+			return { ok: false, message: 'inline schema `properties` requires `type: "object"`' };
+		}
+		if (!isPlainObject(schema.properties)) {
+			return { ok: false, message: "inline schema `properties` must be an object" };
+		}
+		const keys = Object.keys(schema.properties);
+		if (keys.length > INLINE_SCHEMA_MAX_ENTRIES) {
+			return {
+				ok: false,
+				message: `inline schema \`properties\` exceeds the ${INLINE_SCHEMA_MAX_ENTRIES}-entry bound`,
+			};
+		}
+		for (const key of keys) {
+			const childValue = schema.properties[key];
+			if (!isPlainObject(childValue))
+				return { ok: false, message: `inline schema property "${key}" must be an object` };
+			const child = buildInlineTypebox(childValue, depth + 1);
+			if (!child.ok) return child;
+			properties.set(key, child.schema);
+		}
+	}
+	if (required !== undefined && typeValue !== "object") {
+		return { ok: false, message: 'inline schema `required` requires `type: "object"`' };
+	}
+	let items: TSchema | undefined;
+	if (schema.items !== undefined) {
+		if (typeValue !== "array") return { ok: false, message: 'inline schema `items` requires `type: "array"`' };
+		if (!isPlainObject(schema.items)) return { ok: false, message: "inline schema `items` must be an object" };
+		const child = buildInlineTypebox(schema.items, depth + 1);
+		if (!child.ok) return child;
+		items = child.schema;
+	}
+	if (enumValue !== undefined) {
+		const literals = enumValue.map((entry) =>
+			entry === null ? Type.Null() : Type.Literal(entry as string | number | boolean),
+		);
+		return { ok: true, schema: literals.length === 1 ? literals[0]! : Type.Union(literals) };
+	}
+	switch (typeValue) {
+		case "object": {
+			const props: Record<string, TSchema> = {};
+			for (const [key, value] of properties) {
+				props[key] = required?.includes(key) ? value : Type.Optional(value);
+			}
+			return { ok: true, schema: Type.Object(props) };
+		}
+		case "array":
+			return { ok: true, schema: Type.Array(items ?? Type.Unknown()) };
+		case "string":
+			return { ok: true, schema: Type.String() };
+		case "number":
+			return { ok: true, schema: Type.Number() };
+		case "integer":
+			return { ok: true, schema: Type.Integer() };
+		case "boolean":
+			return { ok: true, schema: Type.Boolean() };
+		case "null":
+			return { ok: true, schema: Type.Null() };
+		default:
+			return { ok: false, message: "inline schema needs a supported `type` or `enum`" };
+	}
+}
+
+export function validateWorkflowInlineSchema(schema: unknown): InlineSchemaValidation {
+	if (!isPlainObject(schema)) return { ok: false, message: "inline schema must be an object" };
+	let size: number;
+	try {
+		size = Buffer.byteLength(JSON.stringify(schema), "utf-8");
+	} catch {
+		return { ok: false, message: "inline schema is not JSON-serializable" };
+	}
+	if (size > INLINE_SCHEMA_MAX_BYTES) {
+		return { ok: false, message: `inline schema exceeds the ${INLINE_SCHEMA_MAX_BYTES}-byte bound` };
+	}
+	return buildInlineTypebox(schema, 1);
+}
+
+function formatInlineSchemaErrors(schema: TSchema, data: unknown): string {
+	const errors = [...Value.Errors(schema, data)]
+		.slice(0, 3)
+		.map((error) => `${error.instancePath || "root"}: ${error.message}`);
+	return errors.length > 0 ? errors.join("; ") : "value does not match the inline schema";
+}
+
+type IsolationShape = { ok: true; enabled: boolean } | { ok: false; message: string };
+
+export function resolveWorkflowIsolationShape(value: unknown): IsolationShape {
+	if (value === undefined || value === null || value === false) return { ok: true, enabled: false };
+	if (value === true) return { ok: true, enabled: true };
+	if (typeof value === "string") {
+		const normalized = value.toLowerCase();
+		if (normalized === "true") return { ok: true, enabled: true };
+		if (normalized === "false") return { ok: true, enabled: false };
+		return { ok: false, message: 'isolation string must be "true" or "false"' };
+	}
+	if (typeof value === "object" && !Array.isArray(value)) return { ok: true, enabled: true };
+	return { ok: false, message: 'isolation must be true, a "true"/"false" string, an object, null, or omitted' };
+}
+
+const GIT_TIMEOUT_MS = 60_000;
+
+type GitResult = { ok: true; stdout: string } | { ok: false; message: string };
+
+function runGit(cwd: string, args: string[]): Promise<GitResult> {
+	return new Promise((resolveGit) => {
+		execFile(
+			"git",
+			args,
+			{ cwd, timeout: GIT_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+			(error, stdout, stderr) => {
+				if (error) {
+					const detail = `${stderr}${stdout}`.trim() || error.message;
+					resolveGit({ ok: false, message: detail });
+					return;
+				}
+				resolveGit({ ok: true, stdout: stdout.toString().trim() });
+			},
+		);
+	});
+}
+
+interface PreparedIsolation {
+	root: string;
+	worktreePath: string;
+	baseHead: string;
+}
+
+type PrepareIsolationResult = { ok: true; handle: PreparedIsolation } | { ok: false; message: string };
+
+async function prepareIsolationWorktree(params: {
+	worktreeRoot: string;
+	baseCwd: string;
+	runId: string;
+	callIndex: number;
+}): Promise<PrepareIsolationResult> {
+	const root = await runGit(params.baseCwd, ["rev-parse", "--show-toplevel"]);
+	if (!root.ok || root.stdout.length === 0) {
+		const detail = root.ok ? "no repository root found" : root.message;
+		return { ok: false, message: `git worktree isolation needs a Git workspace: ${detail}` };
+	}
+	const head = await runGit(root.stdout, ["rev-parse", "HEAD"]);
+	if (!head.ok) return { ok: false, message: `could not resolve HEAD for isolation: ${head.message}` };
+	const worktreePath = join(params.worktreeRoot, `${params.runId}-${params.callIndex}`);
+	await rm(worktreePath, { recursive: true, force: true });
+	await mkdir(params.worktreeRoot, { recursive: true });
+	const add = await runGit(root.stdout, ["worktree", "add", "--detach", worktreePath, "HEAD"]);
+	if (!add.ok) return { ok: false, message: `git worktree add failed: ${add.message}` };
+	return { ok: true, handle: { root: root.stdout, worktreePath, baseHead: head.stdout } };
+}
+
+async function finalizeIsolationWorktree(handle: PreparedIsolation): Promise<{ retained: boolean; reason: string }> {
+	const status = await runGit(handle.worktreePath, ["status", "--porcelain"]);
+	const head = await runGit(handle.worktreePath, ["rev-parse", "HEAD"]);
+	const hasChanges = !status.ok || status.stdout.length > 0;
+	const headChanged = !head.ok || head.stdout !== handle.baseHead;
+	if (!hasChanges && !headChanged) {
+		const removed = await runGit(handle.root, ["worktree", "remove", "--force", handle.worktreePath]);
+		if (removed.ok) return { retained: false, reason: "clean" };
+		return { retained: true, reason: `worktree remove failed: ${removed.message}` };
+	}
+	return { retained: true, reason: hasChanges ? "uncommitted changes" : "HEAD changed" };
+}
+
+export type WorkflowChildLaunchResolution =
+	| { ok: true; model?: Model<Api>; thinkingLevel?: ThinkingLevel }
+	| { ok: false; error_kind: "model_not_found"; message: string };
+
+export function normalizeWorkflowEffort(effort: string | null | undefined): ThinkingLevel | undefined {
+	if (typeof effort !== "string") return undefined;
+	const normalized = effort.trim().toLowerCase();
+	return WORKFLOW_EFFORT_LEVELS.has(normalized) ? (normalized as ThinkingLevel) : undefined;
+}
+
+export function resolveChildLaunchOptions(
+	request: Pick<WorkflowChildRequest, "model" | "effort">,
+	parent: WorkflowParentRoute | null | undefined,
+): WorkflowChildLaunchResolution {
+	const route = parent ?? {};
+	let model = route.model;
+	const requestedModel = typeof request.model === "string" ? request.model.trim() : "";
+	if (requestedModel.length > 0) {
+		const found =
+			route.findModel?.(requestedModel) ??
+			(route.model &&
+			(route.model.id === requestedModel || `${route.model.provider}/${route.model.id}` === requestedModel)
+				? route.model
+				: undefined);
+		if (!found) {
+			return {
+				ok: false,
+				error_kind: "model_not_found",
+				message: `model override "${requestedModel}" is not available to this workflow`,
+			};
+		}
+		model = found;
+	}
+	return { ok: true, model, thinkingLevel: normalizeWorkflowEffort(request.effort) ?? route.thinkingLevel };
+}
+
+export function findModelInRegistry(
+	registry: ModelRegistry | undefined,
+): ((modelId: string) => Model<Api> | undefined) | undefined {
+	if (!registry) return undefined;
+	return (modelId: string) => {
+		const direct = registry.getAll().find((model) => model.id === modelId);
+		if (direct) return direct;
+		const separator = modelId.indexOf("/");
+		if (separator <= 0 || separator === modelId.length - 1) return undefined;
+		return registry.find(modelId.slice(0, separator), modelId.slice(separator + 1));
+	};
+}
+
+function parentRouteFor(options: WorkflowToolOptions | undefined, ctx: ExtensionContext): WorkflowParentRoute {
+	return {
+		model: options?.parentModel ?? ctx?.model,
+		thinkingLevel: options?.parentThinkingLevel ?? ctx?.thinkingLevel,
+		findModel: options?.findModel ?? findModelInRegistry(ctx?.modelRegistry),
+	};
+}
+
+const SAVED_WORKFLOW_EXTENSIONS = [".mjs", ".js"] as const;
+
+function defaultWorkflowRegistryDirs(cwd: string): string[] {
+	return [
+		join(cwd, ".agents", "workflows"),
+		join(cwd, ".codex", "workflows"),
+		join(cwd, ".claude", "workflows"),
+		join(getAgentDir(), "workflows"),
+	];
+}
+
+async function discoverSavedWorkflows(dirs: string[]): Promise<Map<string, string>> {
+	const found = new Map<string, string>();
+	for (const dir of dirs) {
+		let entries: string[];
+		try {
+			entries = await readdir(dir);
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			const extension = SAVED_WORKFLOW_EXTENSIONS.find((candidate) => entry.endsWith(candidate));
+			if (extension === undefined) continue;
+			const name = entry.slice(0, entry.length - extension.length);
+			if (name.length === 0 || found.has(name)) continue;
+			found.set(name, join(dir, entry));
+		}
+	}
+	return found;
 }
 
 interface NormalizedWorkflowInput {
@@ -730,9 +1215,10 @@ async function persistJournal(
 async function resolveWorkflowSource(params: {
 	cwd: string;
 	workflowDir: string;
+	registryDirs: string[];
 	input: NormalizedWorkflowInput;
 }): Promise<{ ok: true; source: ResolvedWorkflowSource } | { ok: false; error: WorkflowRunError }> {
-	const { cwd, workflowDir, input } = params;
+	const { cwd, workflowDir, registryDirs, input } = params;
 	const runId = input.resumeFromRunId ?? randomUUID();
 	const priorState = input.resumeFromRunId !== undefined ? workflowRunStates.get(input.resumeFromRunId) : undefined;
 	if (priorState?.status === "running") {
@@ -745,28 +1231,40 @@ async function resolveWorkflowSource(params: {
 		};
 	}
 
-	if (input.script === undefined && input.scriptPath === undefined && input.resumeFromRunId === undefined) {
-		if (input.displayName !== undefined) {
-			return {
-				ok: false,
-				error: {
-					code: "not_implemented",
-					message:
-						`saved workflow lookup by name ("${input.displayName}") is not implemented in pi-muse; ` +
-						"pass an inline script, a scriptPath, or a resumeFromRunId instead",
-				},
-			};
-		}
-		return {
-			ok: false,
-			error: { code: "invalid_input", message: "workflow requires one of: script, scriptPath, resumeFromRunId" },
-		};
-	}
-
 	let scriptPath: string;
 	let scriptSource: string;
 
-	if (input.script !== undefined) {
+	if (input.script === undefined && input.scriptPath === undefined && input.resumeFromRunId === undefined) {
+		if (input.displayName === undefined) {
+			return {
+				ok: false,
+				error: { code: "invalid_input", message: "workflow requires one of: script, scriptPath, resumeFromRunId" },
+			};
+		}
+		const found = await discoverSavedWorkflows(registryDirs);
+		const savedPath = found.get(input.displayName);
+		if (savedPath === undefined) {
+			const available = Array.from(found.keys()).sort();
+			const suffix =
+				available.length > 0 ? `available workflows: ${available.join(", ")}` : "no saved workflows found";
+			return {
+				ok: false,
+				error: {
+					code: "workflow_not_found",
+					message: `saved workflow "${input.displayName}" was not found (${suffix})`,
+				},
+			};
+		}
+		scriptPath = savedPath;
+		try {
+			scriptSource = await readFile(scriptPath, "utf-8");
+		} catch (error) {
+			return {
+				ok: false,
+				error: { code: "script_not_found", message: `saved workflow not readable: ${errorMessage(error)}` },
+			};
+		}
+	} else if (input.script !== undefined) {
 		const target = await resolveInlineScriptTarget(cwd, workflowDir, runId, input.scriptPath);
 		if (!target.ok) return target;
 		scriptPath = target.path;
@@ -846,9 +1344,12 @@ interface WorkerRunParams {
 	args: unknown;
 	journal: Array<WorkflowJournalEntry | null>;
 	childRunner: WorkflowChildRunner;
+	parent: WorkflowParentRoute | null;
+	worktreeRoot: string;
+	runnerHandlesIsolation: boolean;
 	signal: AbortSignal | undefined;
 	onMarker: (kind: "log" | "phase", text: string) => void;
-	onAgentCall: () => void;
+	onAgentCall: (phase: string | null) => void;
 	limits: {
 		maxConcurrentChildren: number;
 		maxTotalAgentCalls: number;
@@ -964,14 +1465,83 @@ function runWorkflowWorker(params: WorkerRunParams): Promise<WorkerRunResult> {
 				});
 				return;
 			}
+
+			let schemaValidator: TSchema | null = null;
+			if (message.request.schema !== null && message.request.schema !== undefined) {
+				const validatedSchema = validateWorkflowInlineSchema(message.request.schema);
+				if (!validatedSchema.ok) {
+					postToWorker({
+						type: "agent:result",
+						id: message.id,
+						result: {
+							ref: fallbackRef,
+							text: "",
+							error_kind: "invalid_schema",
+							error: { code: "invalid_schema", message: validatedSchema.message },
+						},
+					});
+					return;
+				}
+				schemaValidator = validatedSchema.schema;
+			}
+
+			const isolationShape = resolveWorkflowIsolationShape(message.request.isolation);
+			if (!isolationShape.ok) {
+				postToWorker({
+					type: "agent:result",
+					id: message.id,
+					result: {
+						ref: fallbackRef,
+						text: "",
+						error_kind: "invalid_isolation",
+						error: { code: "invalid_isolation", message: isolationShape.message },
+					},
+				});
+				return;
+			}
+
+			let isolationHandle: PreparedIsolation | null = null;
+			if (isolationShape.enabled && !params.runnerHandlesIsolation) {
+				const prepared = await prepareIsolationWorktree({
+					worktreeRoot: params.worktreeRoot,
+					baseCwd: params.cwd,
+					runId: params.runId,
+					callIndex: message.index,
+				});
+				if (!prepared.ok) {
+					postToWorker({
+						type: "agent:result",
+						id: message.id,
+						result: {
+							ref: fallbackRef,
+							text: "",
+							error_kind: "isolation_unavailable",
+							error: { code: "isolation_unavailable", message: prepared.message },
+						},
+					});
+					return;
+				}
+				isolationHandle = prepared.handle;
+			}
+
 			agentCalls += 1;
-			params.onAgentCall();
+			params.onAgentCall(typeof message.request.phase === "string" ? message.request.phase : null);
 			let result: NormalizedChildResult;
+			const isolationContext: WorkflowIsolationContext | null = isolationHandle
+				? { worktreePath: isolationHandle.worktreePath, baseCwd: params.cwd }
+				: null;
 			try {
 				const raw = await callChildRunnerWithTimeout(
 					params.childRunner,
 					message.request,
-					{ cwd: params.cwd, runId: params.runId, callIndex: message.index, signal: controller.signal },
+					{
+						cwd: params.cwd,
+						runId: params.runId,
+						callIndex: message.index,
+						signal: controller.signal,
+						isolation: isolationContext,
+						parent: params.parent,
+					},
 					limits.agentCallTimeoutMs,
 				);
 				result = normalizeChildResult(raw, fallbackRef);
@@ -987,7 +1557,32 @@ function runWorkflowWorker(params: WorkerRunParams): Promise<WorkerRunResult> {
 					},
 				};
 			}
-			if (result.error_kind === null) journal[message.index] = { hash: message.requestHash, result };
+			if (isolationHandle) {
+				const finalized = await finalizeIsolationWorktree(isolationHandle);
+				result = {
+					...result,
+					isolation: {
+						worktree_path: isolationHandle.worktreePath,
+						retained: finalized.retained,
+						reason: finalized.reason,
+					},
+				};
+			}
+			if (schemaValidator && result.error_kind === null && !Value.Check(schemaValidator, result.data)) {
+				result = {
+					...result,
+					data: null,
+					error_kind: "schema_invalid",
+					schema_invalid: true,
+					error: {
+						code: "schema_invalid",
+						message: `child result did not match the inline schema: ${formatInlineSchemaErrors(schemaValidator, result.data)}`,
+					},
+				};
+			}
+			if (result.error_kind === null || result.schema_invalid === true) {
+				journal[message.index] = { hash: message.requestHash, result };
+			}
 			postToWorker({ type: "agent:result", id: message.id, result });
 		};
 
@@ -1057,11 +1652,17 @@ async function runWorkflow(
 	options: WorkflowToolOptions | undefined,
 	signal: AbortSignal | undefined,
 	onUpdate: AgentToolUpdateCallback<WorkflowToolDetails> | undefined,
+	parent: WorkflowParentRoute,
 ): Promise<WorkflowExecution> {
 	const startedAt = Date.now();
 	const workflowDir = workflowDirFor(cwd, options);
+	const inProcess = options?.childRunner === undefined ? readInProcessChildRunner() : undefined;
+	const inProcessLimit = inProcess?.maxConcurrent();
 	const limits = {
-		maxConcurrentChildren: options?.maxConcurrentChildren ?? DEFAULT_MAX_CONCURRENT_CHILDREN,
+		maxConcurrentChildren:
+			typeof inProcessLimit === "number" && Number.isFinite(inProcessLimit) && inProcessLimit > 0
+				? Math.min(options?.maxConcurrentChildren ?? DEFAULT_MAX_CONCURRENT_CHILDREN, inProcessLimit)
+				: (options?.maxConcurrentChildren ?? DEFAULT_MAX_CONCURRENT_CHILDREN),
 		maxTotalAgentCalls: options?.maxTotalAgentCalls ?? DEFAULT_MAX_TOTAL_AGENT_CALLS,
 		maxProgressMarkers: options?.maxProgressMarkers ?? DEFAULT_MAX_PROGRESS_MARKERS,
 		runTimeoutMs: options?.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
@@ -1069,6 +1670,17 @@ async function runWorkflow(
 	};
 	const logs: string[] = [];
 	const phases: string[] = [];
+	const phaseGroups: WorkflowPhaseGroup[] = [];
+	let activePhase: WorkflowPhaseGroup | null = null;
+
+	const ensurePhaseGroup = (title: string): WorkflowPhaseGroup => {
+		let group = phaseGroups.find((candidate) => candidate.title === title);
+		if (group === undefined) {
+			group = { title, logs: [], agentCalls: 0 };
+			phaseGroups.push(group);
+		}
+		return group;
+	};
 
 	const baseDetails = (runId: string, scriptPath?: string, scriptHash?: string): WorkflowToolDetails => ({
 		runId,
@@ -1079,6 +1691,7 @@ async function runWorkflow(
 		durationMs: Date.now() - startedAt,
 		logs,
 		phases,
+		phaseGroups,
 	});
 
 	const fail = (
@@ -1105,7 +1718,8 @@ async function runWorkflow(
 	const normalized = normalizeWorkflowInput(input);
 	if (!normalized.ok) return fail(normalized.error, "");
 
-	const resolved = await resolveWorkflowSource({ cwd, workflowDir, input: normalized.value });
+	const registryDirs = options?.workflowRegistryDirs ?? defaultWorkflowRegistryDirs(cwd);
+	const resolved = await resolveWorkflowSource({ cwd, workflowDir, registryDirs, input: normalized.value });
 	if (!resolved.ok) return fail(resolved.error, normalized.value.resumeFromRunId ?? "");
 	const source = resolved.source;
 	let liveAgentCalls = 0;
@@ -1117,8 +1731,13 @@ async function runWorkflow(
 	});
 
 	const onMarker = (kind: "log" | "phase", text: string): void => {
-		if (kind === "log") logs.push(text);
-		else phases.push(text);
+		if (kind === "log") {
+			logs.push(text);
+			activePhase?.logs.push(text);
+		} else {
+			phases.push(text);
+			activePhase = ensurePhaseGroup(text);
+		}
 		try {
 			onUpdate?.({
 				content: [
@@ -1129,6 +1748,7 @@ async function runWorkflow(
 							status: "running",
 							logs: logs.slice(-5),
 							phases,
+							phaseGroups,
 							agentCalls: liveAgentCalls,
 						}),
 					},
@@ -1142,6 +1762,7 @@ async function runWorkflow(
 					durationMs: Date.now() - startedAt,
 					logs,
 					phases,
+					phaseGroups,
 				},
 			});
 		} catch {
@@ -1157,10 +1778,14 @@ async function runWorkflow(
 		args: normalized.value.args,
 		journal: source.journal,
 		childRunner: options?.childRunner ?? defaultWorkflowChildRunner,
+		parent,
+		worktreeRoot: options?.worktreeRoot ?? join(tmpdir(), "pi-muse-worktrees"),
+		runnerHandlesIsolation: inProcess !== undefined,
 		signal,
 		onMarker,
-		onAgentCall: () => {
+		onAgentCall: (phase) => {
 			liveAgentCalls += 1;
+			if (typeof phase === "string" && phase.length > 0) ensurePhaseGroup(phase).agentCalls += 1;
 		},
 		limits,
 	});
@@ -1201,6 +1826,7 @@ async function runWorkflow(
 			durationMs: Date.now() - startedAt,
 			logs,
 			phases,
+			phaseGroups,
 		},
 	};
 }
@@ -1224,7 +1850,14 @@ export function createWorkflowToolDefinition(
 		parameters: workflowSchema,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(_toolCallId: string, input: WorkflowToolInput, signal, onUpdate, ctx: ExtensionContext) {
-			const execution = await runWorkflow(ctx?.cwd || cwd, input, options, signal, onUpdate);
+			const execution = await runWorkflow(
+				ctx?.cwd || cwd,
+				input,
+				options,
+				signal,
+				onUpdate,
+				parentRouteFor(options, ctx),
+			);
 			return {
 				content: [{ type: "text" as const, text: JSON.stringify(execution.payload) }],
 				details: execution.details,

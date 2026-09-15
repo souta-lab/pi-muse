@@ -16,14 +16,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI, ProviderConfig } from "../src/core/extensions/types.ts";
 import { buildMuseDeveloperContext } from "../src/core/muse-context.ts";
 import { MUSE_SYSTEM_PROMPT } from "../src/core/muse-system-prompt.ts";
 import type { Skill } from "../src/core/skills.ts";
-import { createMuseToolDefinitions } from "../src/core/tools/muse.ts";
+import { buildSystemPrompt } from "../src/core/system-prompt.ts";
+import { createMuseToolDefinitions, createMuseTools } from "../src/core/tools/muse.ts";
 import museExtension, { MUSE_PROVIDER_ID } from "../src/extensions/muse.ts";
 import museSubagentsExtension from "../src/extensions/muse-subagents.ts";
 
@@ -37,17 +38,15 @@ const DESCRIPTIONS_FIXTURE = join(FIXTURE_DIR, "descriptions.json");
 /** Workspace root used by the captured session; also the cwd handed to tool factories. */
 const CAPTURED_CWD = "/tmp/opencode/muse-work";
 
-/** Minimum identical-line ratio for the system prompt after `muse.<tool>` normalization. */
-const SYSTEM_PROMPT_LINE_RATIO_BASELINE = 0.99;
+/** The captured runtime prompt contains exactly this many `muse.<tool>` references. */
+const SYSTEM_PROMPT_MUSE_REFERENCE_COUNT = 25;
 
 /**
- * Description-character coverage floors, measured after the official text was
- * restored verbatim (mirrored 0.9875, all-22 0.9956). They only ever move up: a
- * future change that shortens a description relative to the official one fails
- * here instead of regressing silently.
+ * The restored descriptions must equal the official text exactly, so the
+ * coverage ratios are pinned at 1.0: any shortening relative to the capture
+ * fails here instead of regressing silently.
  */
-const DESCRIPTION_COVERAGE_MIRRORED_BASELINE = 0.9875;
-const DESCRIPTION_COVERAGE_OFFICIAL22_BASELINE = 0.995;
+const DESCRIPTION_COVERAGE_EXACT = 1;
 
 /** How many of the 22 official tool names pi-muse must keep visible (native + bridged); measured 22. */
 const TOOL_COVERAGE_BASELINE = 22;
@@ -114,6 +113,7 @@ interface ExposedTool {
 	name: string;
 	description: string;
 	surface: ToolSurface;
+	parameters: unknown;
 	origin: "native" | "bridged";
 }
 
@@ -131,25 +131,8 @@ function readText(path: string): string {
 	return readFileSync(path, "utf8");
 }
 
-/** `muse.read_file` and the bare `read_file` are the same tool for comparison purposes. */
-function normalizeToolRefs(text: string): string {
-	return text.replace(/muse\.([a-z_]+)/g, "$1");
-}
-
 function toLines(text: string): string[] {
 	return text.replace(/\r\n/g, "\n").trimEnd().split("\n");
-}
-
-/** Positional identical-line ratio after trimming, so indentation drift does not count as a difference. */
-function identicalLineRatio(fixtureText: string, ourText: string): { identical: number; total: number; ratio: number } {
-	const fixtureLines = toLines(fixtureText).map((line) => line.trim());
-	const ourLines = toLines(ourText).map((line) => line.trim());
-	const total = Math.max(fixtureLines.length, ourLines.length);
-	let identical = 0;
-	for (let index = 0; index < Math.min(fixtureLines.length, ourLines.length); index++) {
-		if (fixtureLines[index] === ourLines[index]) identical++;
-	}
-	return { identical, total, ratio: total === 0 ? 0 : identical / total };
 }
 
 function toolSurface(parameters: unknown): ToolSurface {
@@ -158,6 +141,47 @@ function toolSurface(parameters: unknown): ToolSurface {
 		properties: Object.keys(schema.properties ?? {}).sort(),
 		required: Array.isArray(schema.required) ? schema.required.map(String).sort() : [],
 	};
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Collect every leaf where our parameter schema differs from the official one:
+ * scalar mismatches, missing/extra keys, and array element or length differences
+ * (so an `anyOf`/`const` chain versus an `enum` counts as a difference).
+ */
+function schemaDiffLeaves(ours: unknown, official: unknown, path: string, out: string[]): void {
+	if (Array.isArray(official) || Array.isArray(ours)) {
+		if (!Array.isArray(official) || !Array.isArray(ours)) {
+			out.push(`${path}: shape`);
+			return;
+		}
+		const max = Math.max(ours.length, official.length);
+		for (let index = 0; index < max; index++) {
+			if (index >= ours.length) out.push(`${path}[${index}]: missing`);
+			else if (index >= official.length) out.push(`${path}[${index}]: extra`);
+			else schemaDiffLeaves(ours[index], official[index], `${path}[${index}]`, out);
+		}
+		return;
+	}
+	if (isPlainObject(official) || isPlainObject(ours)) {
+		if (!isPlainObject(official) || !isPlainObject(ours)) {
+			out.push(`${path}: shape`);
+			return;
+		}
+		const keys = new Set([...Object.keys(ours), ...Object.keys(official)]);
+		for (const key of [...keys].sort()) {
+			const hasOurs = Object.hasOwn(ours, key);
+			const hasOfficial = Object.hasOwn(official, key);
+			if (hasOurs && !hasOfficial) out.push(`${path}.${key}: extra`);
+			else if (!hasOurs && hasOfficial) out.push(`${path}.${key}: missing`);
+			else schemaDiffLeaves(ours[key], official[key], `${path}.${key}`, out);
+		}
+		return;
+	}
+	if (JSON.stringify(ours) !== JSON.stringify(official)) out.push(`${path}: differs`);
 }
 
 function sumDescriptionChars(tools: ExposedTool[]): number {
@@ -192,6 +216,7 @@ function nativeTools(): ExposedTool[] {
 		name: definition.name,
 		description: definition.description,
 		surface: toolSurface(definition.parameters),
+		parameters: definition.parameters,
 		origin: "native" as const,
 	}));
 }
@@ -235,6 +260,7 @@ async function bridgedTools(): Promise<ExposedTool[]> {
 				name: definition.name,
 				description: definition.description ?? "",
 				surface: toolSurface(definition.parameters),
+				parameters: definition.parameters,
 				origin: "bridged",
 			});
 		},
@@ -264,18 +290,21 @@ const SSE_COMPLETION_BODY = [
 ].join("\n");
 
 describe.skipIf(!hasMirrorFixtures)("Muse wire parity against captured Muse Code 1.2.1", () => {
-	it("system prompt matches the captured runtime prompt after tool-reference normalization", () => {
-		const fixture = normalizeToolRefs(readText(SYSTEM_PROMPT_FIXTURE));
-		const ours = normalizeToolRefs(MUSE_SYSTEM_PROMPT);
-		const { identical, total, ratio } = identicalLineRatio(fixture, ours);
+	it("system prompt matches the captured runtime prompt byte-for-byte", () => {
+		const fixture = readText(SYSTEM_PROMPT_FIXTURE);
+		const museReferences = (MUSE_SYSTEM_PROMPT.match(/muse\./g) ?? []).length;
+		const identical = MUSE_SYSTEM_PROMPT === fixture;
 
 		report(
-			`system prompt: ${identical}/${total} identical lines after muse.<tool> normalization (ratio ${ratio.toFixed(4)}, baseline >= ${SYSTEM_PROMPT_LINE_RATIO_BASELINE})`,
+			`system prompt: ${identical ? "byte-identical" : "MISMATCH"} to the capture (${Buffer.byteLength(MUSE_SYSTEM_PROMPT)}/${Buffer.byteLength(fixture)} bytes)`,
 		);
 		report(`system prompt: ${toLines(MUSE_SYSTEM_PROMPT).length} lines, ${MUSE_SYSTEM_PROMPT.length} chars`);
+		report(
+			`system prompt: ${museReferences} muse.<tool> references (captured ${SYSTEM_PROMPT_MUSE_REFERENCE_COUNT})`,
+		);
 
-		expect(ratio).toBeGreaterThanOrEqual(SYSTEM_PROMPT_LINE_RATIO_BASELINE);
-		expect(MUSE_SYSTEM_PROMPT).not.toMatch(/muse\./);
+		expect(MUSE_SYSTEM_PROMPT).toBe(fixture);
+		expect(museReferences).toBe(SYSTEM_PROMPT_MUSE_REFERENCE_COUNT);
 		expect(toLines(MUSE_SYSTEM_PROMPT).length).toBeGreaterThan(0);
 	});
 
@@ -286,6 +315,13 @@ describe.skipIf(!hasMirrorFixtures)("Muse wire parity against captured Muse Code
 		expect(officialTools.map((tool) => tool.name).sort()).toEqual(
 			officialToolsFixture.map((tool) => tool.name).sort(),
 		);
+
+		// Every captured inner tool carries `strict` explicitly (captured value: false).
+		for (const tool of officialTools) {
+			expect(Object.keys(tool)).toEqual(["type", "name", "description", "parameters", "strict"]);
+			expect(tool.strict).toBe(false);
+		}
+		report(`official inner tools: all ${officialTools.length} carry keys type,name,description,parameters,strict`);
 
 		const native = nativeTools();
 		const bridged = await bridgedTools();
@@ -349,18 +385,19 @@ describe.skipIf(!hasMirrorFixtures)("Muse wire parity against captured Muse Code
 		const exposedRatio = exposedOfficialChars === 0 ? 0 : ourVisibleChars / exposedOfficialChars;
 
 		report(
-			`tool descriptions (14 mirrored tools): ${mirroredOurChars}/${mirroredOfficialChars} chars (ratio ${mirroredRatio.toFixed(4)}, baseline >= ${DESCRIPTION_COVERAGE_MIRRORED_BASELINE})`,
+			`tool descriptions (14 mirrored tools): ${mirroredOurChars}/${mirroredOfficialChars} chars (ratio ${mirroredRatio.toFixed(4)}, exact ${DESCRIPTION_COVERAGE_EXACT})`,
 		);
 		report(
-			`tool descriptions (all 22 official): ${ourVisibleChars}/${official22Chars} chars (ratio ${official22Ratio.toFixed(4)}, baseline >= ${DESCRIPTION_COVERAGE_OFFICIAL22_BASELINE})`,
+			`tool descriptions (all 22 official): ${ourVisibleChars}/${official22Chars} chars (ratio ${official22Ratio.toFixed(4)}, exact ${DESCRIPTION_COVERAGE_EXACT})`,
 		);
-		report(`tool descriptions (visible official subset): ratio ${exposedRatio.toFixed(4)}`);
+		report(`tool descriptions (visible official subset): ratio ${exposedRatio.toFixed(4)}, exact 1.0`);
 		report(
 			`tool descriptions: native ${sumDescriptionChars(native)} chars, bridged ${sumDescriptionChars(bridged)} chars`,
 		);
 
-		expect(mirroredRatio).toBeGreaterThanOrEqual(DESCRIPTION_COVERAGE_MIRRORED_BASELINE);
-		expect(official22Ratio).toBeGreaterThanOrEqual(DESCRIPTION_COVERAGE_OFFICIAL22_BASELINE);
+		expect(mirroredRatio).toBe(DESCRIPTION_COVERAGE_EXACT);
+		expect(official22Ratio).toBe(DESCRIPTION_COVERAGE_EXACT);
+		expect(exposedRatio).toBe(DESCRIPTION_COVERAGE_EXACT);
 
 		if (existsSync(SCHEMAS_FIXTURE) && existsSync(DESCRIPTIONS_FIXTURE)) {
 			const schemas = readJson<Record<string, OfficialTool>>(SCHEMAS_FIXTURE);
@@ -372,6 +409,33 @@ describe.skipIf(!hasMirrorFixtures)("Muse wire parity against captured Muse Code
 		} else {
 			report("tool schemas: /tmp/opencode/ref cross-check skipped (ref fixtures absent)");
 		}
+	});
+
+	it.skipIf(!existsSync(SCHEMAS_FIXTURE))("matches every official inner parameter schema leaf-for-leaf", async () => {
+		const officialTools = readJson<CapturedRequestShape>(REQUEST_FIXTURE).tools[0].tools;
+		const schemas = readJson<Record<string, OfficialTool>>(SCHEMAS_FIXTURE);
+		expect(Object.keys(schemas).sort()).toEqual(officialTools.map((tool) => tool.name).sort());
+
+		const oursByName = new Map(
+			[...nativeTools(), ...(await bridgedTools())].map((tool) => [tool.name, tool] as const),
+		);
+
+		const perTool: Record<string, number> = {};
+		let totalLeaves = 0;
+		for (const [name, official] of Object.entries(schemas)) {
+			const tool = oursByName.get(name);
+			expect(tool, `tool ${name} must be exposed`).toBeDefined();
+			const leaves: string[] = [];
+			schemaDiffLeaves(tool?.parameters, official.parameters, name, leaves);
+			perTool[name] = leaves.length;
+			totalLeaves += leaves.length;
+		}
+
+		report(`parameter schemas: ${Object.keys(schemas).length} tools, ${totalLeaves} differing leaves`);
+		for (const [name, count] of Object.entries(perTool)) {
+			if (count > 0) report(`parameter schema: ${name} has ${count} differing leaves`);
+		}
+		expect(totalLeaves).toBe(0);
 	});
 
 	it("provider specs produce the captured request parameters", async () => {
@@ -438,6 +502,241 @@ describe.skipIf(!hasMirrorFixtures)("Muse wire parity against captured Muse Code
 		expect(payload.store).toBe(shape.store);
 		expect(payload.stream).toBe(shape.stream);
 		expect(typeof payload.prompt_cache_key === "string" && payload.prompt_cache_key.length > 0).toBe(true);
+	});
+
+	it("encodes developer and user input items in the captured Muse shape", async () => {
+		const shape = readJson<CapturedRequestShape>(REQUEST_FIXTURE);
+		for (const item of shape.input) {
+			expect(item.type).toBe("message");
+			expect(typeof item.content).toBe("string");
+		}
+
+		const providers = captureMuseProviders();
+		const provider = providers.get(MUSE_PROVIDER_ID);
+		const spec = provider?.models?.find((model) => model.id === shape.model);
+		expect(spec, "registered muse provider must expose the captured model").toBeDefined();
+
+		const model: Model<"openai-responses"> = {
+			id: spec!.id,
+			name: spec!.name,
+			api: "openai-responses",
+			provider: MUSE_PROVIDER_ID,
+			baseUrl: provider?.baseUrl ?? "",
+			reasoning: spec!.reasoning,
+			input: spec!.input,
+			cost: spec!.cost,
+			contextWindow: spec!.contextWindow,
+			maxTokens: spec!.maxTokens,
+			thinkingLevelMap: spec!.thinkingLevelMap,
+			compat: {
+				supportsInstructionsField: true,
+				toolNamespace: { name: "muse", description: "Muse Code tool set." },
+			},
+		};
+
+		let capturedPayload: Record<string, unknown> | undefined;
+		const stream = streamSimple(
+			model,
+			{
+				instructions: "base system prompt",
+				developerContext: "per-session developer context",
+				messages: [{ role: "user", content: shape.input[1].content as string, timestamp: 0 }],
+			},
+			{
+				apiKey: "parity-test-key",
+				reasoning: "high",
+				sessionId: "muse-wire-parity-input-shape",
+				onPayload: (params) => {
+					capturedPayload = params as Record<string, unknown>;
+					return params;
+				},
+				fetch: async () =>
+					new Response(SSE_COMPLETION_BODY, { status: 200, headers: { "content-type": "text/event-stream" } }),
+			},
+		);
+		await stream.result();
+
+		const input = (capturedPayload?.input ?? []) as Array<{ type?: string; role?: string; content: unknown }>;
+		expect(input).toHaveLength(shape.input.length);
+		expect(input.map((item) => item.type)).toEqual(shape.input.map((item) => item.type));
+		for (const item of input) {
+			expect(Object.keys(item)).toEqual(["type", "role", "content"]);
+		}
+
+		const developer = input.find((item) => item.role === "developer");
+		const user = input.find((item) => item.role === "user");
+		expect(developer?.type).toBe("message");
+		expect(typeof developer?.content).toBe("string");
+		expect(user?.type).toBe("message");
+		expect(user?.content).toBe(shape.input[1].content);
+		expect(Array.isArray(user?.content)).toBe(false);
+		report(
+			`input shape: developer(type=${String(developer?.type)}, content=${Array.isArray(developer?.content) ? "array" : typeof developer?.content}), user(type=${String(user?.type)}, content=${Array.isArray(user?.content) ? "array" : typeof user?.content})`,
+		);
+	});
+
+	it("replays an assistant tool call with Muse's dotted name and no namespace field", async () => {
+		const providers = captureMuseProviders();
+		const provider = providers.get(MUSE_PROVIDER_ID);
+		const spec = provider?.models?.find((model) => model.id === "muse-spark-1.3-contributor");
+		expect(spec, "registered muse provider must expose the captured model").toBeDefined();
+
+		const model: Model<"openai-responses"> = {
+			id: spec!.id,
+			name: spec!.name,
+			api: "openai-responses",
+			provider: MUSE_PROVIDER_ID,
+			baseUrl: provider?.baseUrl ?? "",
+			reasoning: spec!.reasoning,
+			input: spec!.input,
+			cost: spec!.cost,
+			contextWindow: spec!.contextWindow,
+			maxTokens: spec!.maxTokens,
+			thinkingLevelMap: spec!.thinkingLevelMap,
+			compat: {
+				supportsInstructionsField: true,
+				toolNamespace: { name: "muse", description: "Muse Code tool set." },
+			},
+		};
+
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "call_parity|fc_parity",
+					name: "write_file",
+					arguments: { path: "parity.txt" },
+					namespace: "muse",
+				},
+			],
+			api: "openai-responses",
+			provider: MUSE_PROVIDER_ID,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 0,
+		};
+
+		let capturedPayload: Record<string, unknown> | undefined;
+		const stream = streamSimple(
+			model,
+			{ messages: [assistant] },
+			{
+				apiKey: "parity-test-key",
+				reasoning: "high",
+				sessionId: "muse-wire-parity-tool-call",
+				onPayload: (params) => {
+					capturedPayload = params as Record<string, unknown>;
+					return params;
+				},
+				fetch: async () =>
+					new Response(SSE_COMPLETION_BODY, { status: 200, headers: { "content-type": "text/event-stream" } }),
+			},
+		);
+		await stream.result();
+
+		const input = (capturedPayload?.input ?? []) as Array<Record<string, unknown>>;
+		const functionCall = input.find((item) => item.type === "function_call");
+		expect(functionCall).toMatchObject({ type: "function_call", name: "muse.write_file" });
+		expect(functionCall).not.toHaveProperty("namespace");
+		report(`tool-call item: name=${String(functionCall?.name)}, namespace=${"namespace" in (functionCall ?? {})}`);
+	});
+
+	it("emits strict:false on every namespace inner tool through the Muse provider path", async () => {
+		const providers = captureMuseProviders();
+		const provider = providers.get(MUSE_PROVIDER_ID);
+		const spec = provider?.models?.find((model) => model.id === "muse-spark-1.3-contributor");
+		expect(spec, "registered muse provider must expose the captured model").toBeDefined();
+
+		const model: Model<"openai-responses"> = {
+			id: spec!.id,
+			name: spec!.name,
+			api: "openai-responses",
+			provider: MUSE_PROVIDER_ID,
+			baseUrl: provider?.baseUrl ?? "",
+			reasoning: spec!.reasoning,
+			input: spec!.input,
+			cost: spec!.cost,
+			contextWindow: spec!.contextWindow,
+			maxTokens: spec!.maxTokens,
+			thinkingLevelMap: spec!.thinkingLevelMap,
+			compat: {
+				supportsInstructionsField: true,
+				toolNamespace: { name: "muse", description: "Muse Code tool set." },
+			},
+		};
+
+		const museTools = createMuseTools(CAPTURED_CWD);
+		let capturedPayload: Record<string, unknown> | undefined;
+		const stream = streamSimple(
+			model,
+			{ messages: [{ role: "user", content: "ping", timestamp: 0 }], tools: museTools },
+			{
+				apiKey: "parity-test-key",
+				reasoning: "high",
+				sessionId: "muse-wire-parity-strict",
+				onPayload: (params) => {
+					capturedPayload = params as Record<string, unknown>;
+					return params;
+				},
+				fetch: async () =>
+					new Response(SSE_COMPLETION_BODY, { status: 200, headers: { "content-type": "text/event-stream" } }),
+			},
+		);
+		await stream.result();
+
+		const namespaceTools = (capturedPayload?.tools ?? []) as Array<{
+			type?: string;
+			name?: string;
+			tools?: Array<Record<string, unknown>>;
+		}>;
+		expect(namespaceTools).toHaveLength(1);
+		expect(namespaceTools[0]?.type).toBe("namespace");
+		expect(namespaceTools[0]?.name).toBe("muse");
+
+		const innerTools = namespaceTools[0]?.tools ?? [];
+		expect(innerTools).toHaveLength(museTools.length);
+		for (const tool of innerTools) {
+			expect(Object.keys(tool)).toEqual(["type", "name", "description", "parameters", "strict"]);
+			expect(tool.strict).toBe(false);
+		}
+		report(`namespace strict: ${innerTools.length} inner tools all carry strict:false`);
+	});
+
+	it("builds the Muse-harness base prompt exactly equal to the captured instructions", () => {
+		const shape = readJson<CapturedRequestShape>(REQUEST_FIXTURE);
+		expect(typeof shape.instructions).toBe("string");
+
+		const musePrompt = buildSystemPrompt({
+			customPrompt: MUSE_SYSTEM_PROMPT,
+			selectedTools: ["read_file", "bash"],
+			cwd: CAPTURED_CWD,
+			contextFiles: [],
+			skills: [],
+			museHarness: true,
+		});
+		const nativePrompt = buildSystemPrompt({
+			customPrompt: MUSE_SYSTEM_PROMPT,
+			selectedTools: ["read_file", "bash"],
+			cwd: CAPTURED_CWD,
+			contextFiles: [],
+			skills: [],
+			museHarness: false,
+		});
+
+		report(
+			`instructions: muse-harness prompt ${musePrompt.length} chars vs captured ${shape.instructions!.length} chars`,
+		);
+		expect(musePrompt).toBe(shape.instructions);
+		expect(nativePrompt).toBe(`${musePrompt}\nCurrent working directory: ${CAPTURED_CWD}\n`);
 	});
 
 	it("developer context carries the captured section sources in the same order", () => {

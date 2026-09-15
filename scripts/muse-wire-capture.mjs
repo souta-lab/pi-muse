@@ -133,6 +133,10 @@ function writeCaptureAgentDir(port) {
 							xhigh: "xhigh",
 							max: "max",
 						},
+						compat: {
+							supportsInstructionsField: true,
+							toolNamespace: { name: "muse", description: "Muse Code tool set." },
+						},
 					},
 				],
 			},
@@ -153,6 +157,7 @@ function cliArgs() {
 		"--no-context-files",
 		"--no-prompt-templates",
 		"--offline",
+		"--yolo",
 		"-p",
 		CAPTURE_USER_MESSAGE,
 	];
@@ -219,6 +224,8 @@ function runCandidate(candidate, agentDir) {
 
 function summarize(body) {
 	const input = Array.isArray(body.input) ? body.input : [];
+	const firstContent = input[0]?.content;
+	const tools = Array.isArray(body.tools) ? body.tools : [];
 	return {
 		model: body.model,
 		max_output_tokens: body.max_output_tokens,
@@ -228,8 +235,16 @@ function summarize(body) {
 		stream: body.stream,
 		prompt_cache_key: typeof body.prompt_cache_key === "string" ? "present" : "absent",
 		instructions_chars: typeof body.instructions === "string" ? body.instructions.length : "absent",
+		input_item_count: input.length,
 		input_roles: input.map((message) => message.role),
-		tools: Array.isArray(body.tools) ? body.tools.length : 0,
+		input_first_chars:
+			typeof firstContent === "string" ? firstContent.length : JSON.stringify(firstContent ?? null).length,
+		tool_count: tools.length,
+		tool_groups: tools.map((tool) => ({
+			type: tool.type,
+			name: tool.name,
+			tools: Array.isArray(tool.tools) ? tool.tools.length : undefined,
+		})),
 	};
 }
 

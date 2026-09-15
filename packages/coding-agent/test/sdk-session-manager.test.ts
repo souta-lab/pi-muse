@@ -78,7 +78,10 @@ describe("createAgentSession session manager defaults", () => {
 		});
 
 		expect(session.sessionManager).toBe(sessionManager);
-		expect(session.systemPrompt).toContain(`Current working directory: ${sessionCwd}`);
+		// The Muse harness carries cwd in the developer context (workspace-identity)
+		// instead of the base prompt, which stays exactly MUSE_SYSTEM_PROMPT.
+		expect(session.systemPrompt).toContain(`Workspace root: ${sessionCwd}`);
+		expect(session.systemPrompt).not.toContain(`Current working directory: ${sessionCwd}`);
 
 		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash");
 		expect(bashTool).toBeTruthy();

@@ -11,10 +11,12 @@ import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import { MUSE_SYSTEM_PROMPT } from "./muse-system-prompt.ts";
+import type { PermissionMode } from "./permissions/permission-mode.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
+import { repairSessionMessages } from "./session-repair.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
 import {
@@ -31,7 +33,7 @@ import {
 	type ToolName,
 	withFileMutationQueue,
 } from "./tools/index.ts";
-import { MUSE_SUBAGENT_TOOL_NAMES, MUSE_TOOL_NAMES } from "./tools/muse.ts";
+import { MUSE_ACTIVE_TOOL_NAMES } from "./tools/muse.ts";
 
 // Preserve the pre-0.81 fallback for extensions that construct Agent instances
 // or invoke low-level agent loops without supplying streamFn. Agent core remains
@@ -87,6 +89,13 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/**
+	 * Immutable launch-time permission mode resolved from CLI flags plus the
+	 * resolved project trust. Omitted by SDK callers that do not opt in; the
+	 * AgentSession then keeps the captured Muse developer-message default and a
+	 * prompting approval gate.
+	 */
+	permissionMode?: PermissionMode;
 }
 
 /** Result from createAgentSession */
@@ -260,7 +269,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	const defaultActiveToolNames: ToolName[] = [...MUSE_TOOL_NAMES, ...MUSE_SUBAGENT_TOOL_NAMES] as ToolName[];
+	const defaultActiveToolNames: ToolName[] = [...MUSE_ACTIVE_TOOL_NAMES] as ToolName[];
 	const configuredDefaultToolNames = settingsManager.getDefaultTools();
 	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const excludedToolNames = options.excludeTools;
@@ -380,7 +389,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	// Restore messages if session has existing data
 	if (hasExistingSession) {
-		agent.state.messages = existingSession.messages;
+		// A restored assistant toolCall with no toolResult is dangling (the previous
+		// process died mid-tool). Synthesize a non-success result before the next
+		// request instead of re-running the tool or silently dropping the call.
+		agent.state.messages = repairSessionMessages(existingSession.messages).messages;
 		if (!hasThinkingEntry) {
 			sessionManager.appendThinkingLevelChange(thinkingLevel);
 		}
@@ -406,6 +418,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		permissionMode: options.permissionMode,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

@@ -85,7 +85,9 @@ export async function runMuseSearch(
 			signal.addEventListener("abort", onAbort, { once: true });
 		}
 		child.stdout?.on("data", (data: Buffer) => chunks.push(data));
-		child.stderr?.on("data", (data: Buffer) => (stderr += data.toString()));
+		child.stderr?.on("data", (data: Buffer) => {
+			stderr += data.toString();
+		});
 		child.on("error", (error) => {
 			if (settled) return;
 			settled = true;

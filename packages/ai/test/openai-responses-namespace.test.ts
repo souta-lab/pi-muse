@@ -103,6 +103,81 @@ async function* createCustomToolCallEvents(): AsyncIterable<ResponseStreamEvent>
 	} as ResponseStreamEvent;
 }
 
+const museModel: Model<"openai-responses"> = {
+	...model,
+	id: "muse-spark-1.3-contributor",
+	name: "Muse Spark 1.3 Contributor",
+	provider: "muse",
+	compat: {
+		supportsInstructionsField: true,
+		toolNamespace: { name: "muse", description: "Muse Code tool set." },
+	},
+};
+
+async function* createMuseFunctionCallEvents(): AsyncIterable<ResponseStreamEvent> {
+	yield {
+		type: "response.output_item.added",
+		sequence_number: 0,
+		output_index: 0,
+		item: {
+			type: "function_call",
+			id: "fc_muse",
+			call_id: "call_muse",
+			name: "muse.write_file",
+			arguments: "",
+		},
+	} as ResponseStreamEvent;
+	yield {
+		type: "response.output_item.done",
+		sequence_number: 1,
+		output_index: 0,
+		item: {
+			type: "function_call",
+			id: "fc_muse",
+			call_id: "call_muse",
+			name: "muse.write_file",
+			arguments: '{"path":"a.txt"}',
+		},
+	} as ResponseStreamEvent;
+	yield {
+		type: "response.completed",
+		sequence_number: 2,
+		response: { id: "resp_muse", status: "completed" },
+	} as ResponseStreamEvent;
+}
+
+async function* createBareFunctionCallEvents(): AsyncIterable<ResponseStreamEvent> {
+	yield {
+		type: "response.output_item.added",
+		sequence_number: 0,
+		output_index: 0,
+		item: {
+			type: "function_call",
+			id: "fc_bare",
+			call_id: "call_bare",
+			name: "write_file",
+			arguments: "",
+		},
+	} as ResponseStreamEvent;
+	yield {
+		type: "response.output_item.done",
+		sequence_number: 1,
+		output_index: 0,
+		item: {
+			type: "function_call",
+			id: "fc_bare",
+			call_id: "call_bare",
+			name: "write_file",
+			arguments: '{"path":"b.txt"}',
+		},
+	} as ResponseStreamEvent;
+	yield {
+		type: "response.completed",
+		sequence_number: 2,
+		response: { id: "resp_bare", status: "completed" },
+	} as ResponseStreamEvent;
+}
+
 function getToolCall(output: AssistantMessage): ToolCall {
 	const block = output.content[0];
 	if (!block || block.type !== "toolCall") throw new Error("Expected toolCall block");
@@ -228,6 +303,77 @@ describe("OpenAI Responses tool-call namespaces", () => {
 			(item) => item.type === "function_call",
 		);
 		expect(replayed).toBeDefined();
+		expect(replayed).not.toHaveProperty("namespace");
+	});
+});
+
+describe("Muse Responses tool-call name shape", () => {
+	it("replays a namespaced tool call as a dotted name with no namespace field", () => {
+		const output = createOutput();
+		output.provider = "muse";
+		output.model = "muse-spark-1.3-contributor";
+		output.content.push({
+			type: "toolCall",
+			id: "call_test|fc_test",
+			name: "write_file",
+			arguments: { path: "a.txt" },
+			namespace: "muse",
+		});
+
+		const replayed = convertResponsesMessages(museModel, { messages: [output] }, new Set(["muse"]), {
+			museResponsesShape: true,
+		}).find((item) => item.type === "function_call");
+
+		expect(replayed).toMatchObject({
+			type: "function_call",
+			name: "muse.write_file",
+			arguments: '{"path":"a.txt"}',
+		});
+		expect(replayed).not.toHaveProperty("namespace");
+	});
+
+	it("splits a Muse dotted function-call name into tool name and namespace inbound", async () => {
+		const output = createOutput();
+		await processResponsesStream(
+			createMuseFunctionCallEvents(),
+			output,
+			new AssistantMessageEventStream(),
+			museModel,
+		);
+
+		const toolCall = getToolCall(output);
+		expect(toolCall).toMatchObject({ name: "write_file", namespace: "muse", arguments: { path: "a.txt" } });
+	});
+
+	it("keeps a bare function-call name with no namespace inbound", async () => {
+		const output = createOutput();
+		await processResponsesStream(
+			createBareFunctionCallEvents(),
+			output,
+			new AssistantMessageEventStream(),
+			museModel,
+		);
+
+		const toolCall = getToolCall(output);
+		expect(toolCall).toMatchObject({ name: "write_file", arguments: { path: "b.txt" } });
+		expect(toolCall).not.toHaveProperty("namespace");
+	});
+
+	it("round-trips an inbound Muse call back to the dotted wire name", async () => {
+		const output = createOutput();
+		output.provider = "muse";
+		output.model = "muse-spark-1.3-contributor";
+		await processResponsesStream(
+			createMuseFunctionCallEvents(),
+			output,
+			new AssistantMessageEventStream(),
+			museModel,
+		);
+
+		const replayed = convertResponsesMessages(museModel, { messages: [output] }, new Set(["muse"]), {
+			museResponsesShape: true,
+		}).find((item) => item.type === "function_call");
+		expect(replayed).toMatchObject({ name: "muse.write_file" });
 		expect(replayed).not.toHaveProperty("namespace");
 	});
 });

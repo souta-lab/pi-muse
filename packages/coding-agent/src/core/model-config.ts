@@ -123,6 +123,13 @@ const OpenAIResponsesCompatSchema = Type.Object({
 	supportsAdditionalTools: Type.Optional(Type.Boolean()),
 	supportsToolSearch: Type.Optional(Type.Boolean()),
 	supportsMaxOutputTokens: Type.Optional(Type.Boolean()),
+	supportsInstructionsField: Type.Optional(Type.Boolean()),
+	toolNamespace: Type.Optional(
+		Type.Object({
+			name: Type.String({ minLength: 1 }),
+			description: Type.Optional(Type.String()),
+		}),
+	),
 });
 
 const AnthropicMessagesCompatSchema = Type.Object({

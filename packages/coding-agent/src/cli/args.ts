@@ -50,6 +50,12 @@ export interface Args {
 	tuiMode?: TuiMode;
 	verbose?: boolean;
 	projectTrustOverride?: boolean;
+	/** `--disable-approval`: never prompt for tool-call approval in this session. */
+	disableApproval?: boolean;
+	/** `--disable-sandbox`: run shell commands without the workspace sandbox. */
+	disableSandbox?: boolean;
+	/** `--yolo`: approval bypass + sandbox off + workspace trust. */
+	yolo?: boolean;
 	messages: string[];
 	fileArgs: string[];
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
@@ -220,6 +226,12 @@ export function parseArgs(args: string[]): Args {
 			result.projectTrustOverride = true;
 		} else if (arg === "--no-approve" || arg === "-na") {
 			result.projectTrustOverride = false;
+		} else if (arg === "--disable-approval") {
+			result.disableApproval = true;
+		} else if (arg === "--disable-sandbox") {
+			result.disableSandbox = true;
+		} else if (arg === "--yolo") {
+			result.yolo = true;
 		} else if (arg === "--offline") {
 			result.offline = true;
 		} else if (arg.startsWith("@")) {
@@ -315,6 +327,9 @@ ${chalk.bold("Options:")}
   --tui-mode <mode>              TUI mode: regular (default) or fullscreen
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
+  --disable-approval             Skip the approval prompt for mutating tools (bash, write_file, edit_file, subagent_spawn, workflow)
+  --disable-sandbox              Run shell commands without the workspace sandbox
+  --yolo                         Bypass approvals, disable the sandbox, and trust the workspace for this run
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
   --                             End option parsing; treat remaining arguments as messages/files
   --help, -h                     Show this help

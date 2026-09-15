@@ -6,6 +6,7 @@ import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import { MUSE_SYSTEM_PROMPT } from "./muse-system-prompt.ts";
+import type { PermissionMode } from "./permissions/permission-mode.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -63,6 +64,8 @@ export interface CreateAgentSessionFromServicesOptions {
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
+	/** Immutable launch-time permission mode threaded into the AgentSession. */
+	permissionMode?: PermissionMode;
 }
 
 /**
@@ -219,5 +222,6 @@ export async function createAgentSessionFromServices(
 		noTools: options.noTools,
 		customTools: options.customTools,
 		sessionStartEvent: options.sessionStartEvent,
+		permissionMode: options.permissionMode,
 	});
 }

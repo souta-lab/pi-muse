@@ -97,8 +97,22 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 			return getBashShellConfig(bashOnPath);
 		}
 
+		// 4. Fallback: run through the OS shell with piped stdio. This is NOT bash-compatible
+		// (bash syntax will not parse), but Muse's bash contract (JSON record, session ids,
+		// background delivery) still holds, so the tool stays usable without Git Bash.
+		const comspec = process.env.ComSpec ?? process.env.COMSPEC;
+		if (comspec && existsSync(comspec)) {
+			// /d skips AutoRun scripts, /s preserves the /c command string verbatim.
+			return { shell: comspec, args: ["/d", "/s", "/c"] };
+		}
+		try {
+			return getPowerShellConfig();
+		} catch {
+			// Fall through to the error below.
+		}
+
 		throw new Error(
-			`No bash shell found. Options:\n` +
+			`No bash shell found and no cmd.exe/PowerShell fallback available. Options:\n` +
 				`  1. Install Git for Windows: https://git-scm.com/download/win\n` +
 				`  2. Add your bash to PATH (Cygwin, MSYS2, etc.)\n` +
 				"  3. Set shellPath in settings.json\n\n" +
@@ -243,5 +257,133 @@ export function killProcessTree(pid: number): void {
 				// Process already dead
 			}
 		}
+	}
+}
+
+/** PTY mechanism used for a bash session, best effort per platform. */
+export type PtyKind = "gnu-script" | "bsd-script" | "winpty" | "pipes";
+
+export interface PtyStrategy {
+	kind: PtyKind;
+	/** Detected helper binary (`script` or `winpty.exe`); null for the "pipes" fallback. */
+	path: string | null;
+}
+
+const PTY_SCRIPT_PATHS = ["/usr/bin/script", "/bin/script", "/usr/local/bin/script"];
+
+/**
+ * Pure platform -> PTY mechanism mapping. Linux ships util-linux `script` (GNU argv form),
+ * macOS and the BSDs ship BSD `script` (no -c/-e; the command follows the record file), and
+ * Windows has no PTY API reachable from plain Node, so `winpty` is the closest equivalent.
+ */
+export function resolvePtyKind(platform: NodeJS.Platform): PtyKind {
+	switch (platform) {
+		case "linux":
+			return "gnu-script";
+		case "darwin":
+		case "freebsd":
+		case "netbsd":
+		case "openbsd":
+			return "bsd-script";
+		case "win32":
+			return "winpty";
+		default:
+			return "pipes";
+	}
+}
+
+function findFileInPath(executable: string, pathValue: string, exists: (path: string) => boolean): string | null {
+	for (const entry of pathValue.split(delimiter)) {
+		const dir = entry.trim().replace(/^"(.*)"$/, "$1");
+		if (!dir) continue;
+		const candidate = join(dir, executable);
+		if (exists(candidate)) return candidate;
+	}
+	return null;
+}
+
+/**
+ * Detect the concrete PTY helper to spawn. File probes are injectable so the
+ * platform-to-mechanism mapping can be tested without running on the foreign platform.
+ */
+export function detectPtyStrategy(
+	platform: NodeJS.Platform = process.platform,
+	exists: (path: string) => boolean = existsSync,
+): PtyStrategy {
+	const kind = resolvePtyKind(platform);
+	if (kind === "gnu-script" || kind === "bsd-script") {
+		const path = PTY_SCRIPT_PATHS.find((candidate) => exists(candidate)) ?? null;
+		return path ? { kind, path } : { kind: "pipes", path: null };
+	}
+	if (kind === "winpty") {
+		const path = findFileInPath("winpty.exe", process.env.PATH ?? "", exists);
+		return path ? { kind, path } : { kind: "pipes", path: null };
+	}
+	return { kind: "pipes", path: null };
+}
+
+export interface PtyCommandPlan {
+	kind: PtyKind;
+	command: string;
+	args: string[];
+	/** True when the caller writes the command to the child's stdin instead of passing it in argv. */
+	commandOnStdin: boolean;
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function shellToken(value: string): string {
+	return /^[\w@%+=:,./-]+$/.test(value) ? value : shellQuote(value);
+}
+
+/**
+ * Build the spawn plan for one shell command. `command: null` means the shell reads the command
+ * from stdin (legacy WSL bash with `-s`), so argv carries only the shell invocation.
+ *
+ * Fidelity differences, documented because the Muse bash contract hides them from callers:
+ * - winpty restores console semantics (line editing, colors) through a hidden console, but it
+ *   re-renders the console screen buffer, so very long output and full-screen TUIs are lossy.
+ * - The "pipes" fallback is not a PTY on any platform: no line discipline and no tty detection,
+ *   so interactive/full-screen programs and `[ -t 1 ]` checks behave differently, while the bash
+ *   result contract (JSON record, integer session ids, background delivery) stays identical.
+ */
+export function planPtyCommand(input: {
+	kind: PtyKind;
+	ptyPath: string | null;
+	shellPath: string;
+	shellArgs: string[];
+	command: string | null;
+}): PtyCommandPlan {
+	const commandOnStdin = input.command === null;
+	const commandArgs = input.command === null ? [] : [input.command];
+	switch (input.kind) {
+		case "gnu-script": {
+			const inner = [shellToken(input.shellPath), ...input.shellArgs.map(shellToken)];
+			if (input.command !== null) inner.push(shellQuote(input.command));
+			return {
+				kind: "gnu-script",
+				command: input.ptyPath ?? input.shellPath,
+				args: ["-q", "-e", "-c", inner.join(" "), "/dev/null"],
+				commandOnStdin,
+			};
+		}
+		case "bsd-script":
+			return {
+				kind: "bsd-script",
+				command: input.ptyPath ?? input.shellPath,
+				args: ["-q", "/dev/null", input.shellPath, ...input.shellArgs, ...commandArgs],
+				commandOnStdin,
+			};
+		case "winpty":
+			return {
+				kind: "winpty",
+				command: input.ptyPath ?? input.shellPath,
+				args: ["-Xallow-non-tty", "--", input.shellPath, ...input.shellArgs, ...commandArgs],
+				commandOnStdin,
+			};
+		default:
+			return { kind: "pipes", command: input.shellPath, args: [...input.shellArgs, ...commandArgs], commandOnStdin };
 	}
 }
