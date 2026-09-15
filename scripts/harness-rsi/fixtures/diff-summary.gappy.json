@@ -1,0 +1,158 @@
+[
+	{
+		"index": 0,
+		"label": "first request",
+		"score": 0.7125,
+		"leafScore": 0.5,
+		"toolScore": 0.65,
+		"toolScoreUnion": 0.65,
+		"corePass": false,
+		"pass": false,
+		"checks": [
+			{ "name": "model", "pass": true, "left": "muse-spark-1.3-contributor", "right": "muse-spark-1.3-contributor" },
+			{ "name": "max_output_tokens", "pass": false, "left": 128000, "right": 32768 },
+			{ "name": "store", "pass": true, "left": false, "right": false },
+			{ "name": "stream", "pass": true, "left": true, "right": true },
+			{
+				"name": "reasoning",
+				"pass": true,
+				"left": { "effort": "high", "summary": "auto" },
+				"right": { "effort": "high", "summary": "auto" }
+			},
+			{
+				"name": "include",
+				"pass": true,
+				"left": ["reasoning.encrypted_content"],
+				"right": ["reasoning.encrypted_content"]
+			},
+			{ "name": "input item count", "pass": true, "left": 2, "right": 2 },
+			{ "name": "no invented tools", "pass": false, "left": 29, "right": 30 }
+		],
+		"sections": [
+			{ "name": "instructions", "score": 1, "matched": 1, "total": 1 },
+			{ "name": "input.user", "score": 1, "matched": 3, "total": 3 },
+			{ "name": "tools", "score": 0.5, "matched": 246, "total": 492, "perToolScore": 0.65 }
+		],
+		"toolCategories": {
+			"shared": { "count": 28, "names": ["write_file", "subagent_wait"], "averageFidelity": 0.65, "perTool": [] },
+			"missingFromRight": { "count": 1, "names": ["create_goal"] },
+			"extraOnRight": { "count": 1, "names": ["extra_tool"] },
+			"unionCount": 30
+		},
+		"toolOrder": { "left": [], "right": [], "equal": false, "groups": { "left": [], "right": [] } },
+		"toolGaps": [],
+		"tools": {
+			"leftCount": 29,
+			"rightCount": 30,
+			"sameSet": false,
+			"tools": [
+				{ "name": "create_goal", "status": "left-only", "schemaSimilarity": 0 },
+				{ "name": "write_file", "status": "both", "schemaSimilarity": 1 },
+				{
+					"name": "subagent_wait",
+					"status": "both",
+					"schemaSimilarity": 0.3,
+					"description": { "equal": false, "leftChars": 100, "rightChars": 40, "charDelta": -60 },
+					"strict": { "left": true, "right": null, "equal": false },
+					"additionalProperties": { "left": false, "right": null, "equal": false },
+					"properties": { "equal": true, "leftOnly": [], "rightOnly": [] },
+					"required": { "equal": true, "leftOnly": [], "rightOnly": [] }
+				},
+				{ "name": "extra_tool", "status": "right-only", "schemaSimilarity": 0 }
+			]
+		},
+		"differences": [
+			{
+				"path": "input.0.content",
+				"left": "plain string",
+				"right": [{ "type": "input_text", "text": "plain string" }]
+			},
+			{ "path": "tools.create_goal", "left": "<present>", "right": "<missing>" }
+		],
+		"headerDiff": { "matched": 0, "total": 0, "score": 1, "differences": [] },
+		"textual": {
+			"leftLines": 0,
+			"rightLines": 0,
+			"equalLines": 0,
+			"removedLines": 0,
+			"addedLines": 0,
+			"similarity": 1,
+			"lines": []
+		},
+		"structural": {
+			"topLevelKeys": { "left": [], "right": [] },
+			"inputCount": { "left": 2, "right": 2 },
+			"inputRoles": { "left": ["developer", "user"], "right": ["developer", "user"] },
+			"instructionsChars": { "left": 100, "right": 100 }
+		}
+	},
+	{
+		"index": 1,
+		"label": "request 2",
+		"score": 0.95,
+		"leafScore": 0.9,
+		"toolScore": 1,
+		"toolScoreUnion": 1,
+		"corePass": true,
+		"pass": true,
+		"checks": [
+			{ "name": "model", "pass": true, "left": "muse-spark-1.3-contributor", "right": "muse-spark-1.3-contributor" },
+			{ "name": "max_output_tokens", "pass": true, "left": 128000, "right": 128000 },
+			{ "name": "store", "pass": true, "left": false, "right": false },
+			{ "name": "stream", "pass": true, "left": true, "right": true },
+			{
+				"name": "reasoning",
+				"pass": true,
+				"left": { "effort": "high", "summary": "auto" },
+				"right": { "effort": "high", "summary": "auto" }
+			},
+			{
+				"name": "include",
+				"pass": true,
+				"left": ["reasoning.encrypted_content"],
+				"right": ["reasoning.encrypted_content"]
+			},
+			{ "name": "input item count", "pass": true, "left": 4, "right": 4 },
+			{ "name": "no invented tools", "pass": true, "left": 29, "right": 29 }
+		],
+		"sections": [
+			{ "name": "instructions", "score": 1, "matched": 1, "total": 1 },
+			{ "name": "input.user", "score": 0.6666666666666666, "matched": 2, "total": 3 },
+			{ "name": "tools", "score": 1, "matched": 492, "total": 492, "perToolScore": 1 }
+		],
+		"toolCategories": {
+			"shared": { "count": 29, "names": ["write_file"], "averageFidelity": 1, "perTool": [] },
+			"missingFromRight": { "count": 0, "names": [] },
+			"extraOnRight": { "count": 0, "names": [] },
+			"unionCount": 29
+		},
+		"toolOrder": { "left": [], "right": [], "equal": true, "groups": { "left": [], "right": [] } },
+		"toolGaps": [],
+		"tools": {
+			"leftCount": 29,
+			"rightCount": 29,
+			"sameSet": true,
+			"tools": [{ "name": "write_file", "status": "both", "schemaSimilarity": 1 }]
+		},
+		"differences": [{ "path": "input.0.content", "left": "hi", "right": "hi!" }],
+		"headerDiff": { "matched": 0, "total": 0, "score": 1, "differences": [] },
+		"textual": {
+			"leftLines": 0,
+			"rightLines": 0,
+			"equalLines": 0,
+			"removedLines": 0,
+			"addedLines": 0,
+			"similarity": 1,
+			"lines": []
+		},
+		"structural": {
+			"topLevelKeys": { "left": [], "right": [] },
+			"inputCount": { "left": 4, "right": 4 },
+			"inputRoles": {
+				"left": ["developer", "user", "other", "toolResult"],
+				"right": ["developer", "user", "other", "toolResult"]
+			},
+			"instructionsChars": { "left": 100, "right": 100 }
+		}
+	}
+]
