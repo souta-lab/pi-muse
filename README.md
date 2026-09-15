@@ -10,27 +10,35 @@ co-trained it inside Muse Code and locks its best behavior to that harness, so t
 model reaches its advertised performance mainly when it is driven by Muse Code's
 system prompt and tool interface. This project is an alternative, open, hackable
 harness for the same model: it keeps Pi's runtime and swaps in Muse Code's system
-prompt and tool contract, so you can run Muse Spark 1.3 (Meta Model API or
-OpenRouter) without depending on Meta's closed CLI.
+prompt and tool contract, so you can run Muse Spark 1.3 (Meta Model API or the
+OpenCode Go gateway) without depending on Meta's closed CLI.
 
 *(The "benchmaxxed"/lock-in framing is the maintainer's motivation, not a statement
 by Meta.)*
 
+## Status
+
+The harness interface is captured from a live Muse Code 1.2.1 session and verified by a
+traffic-interception harness that runs the real `muse` CLI and `pi-muse` side by side,
+replays the same canned response to both, and diffs their outbound requests:
+
+| | |
+|---|---|
+| System prompt | byte-identical (40,445 chars, sent in the `instructions` field) |
+| Tool surface | **29 / 29** tools, identical order, 0 description diffs, 0 parameter diffs |
+| Per-session `developer` message | byte-identical, all sections |
+| Request parameters | all core checks pass (`model`, `max_output_tokens`, `store`, `stream`, `reasoning`, `include`) |
+| Round trip after a tool call | weighted fidelity 100%, tool-result strings equal |
+
+Reproduce it with `npm run muse:parity`. Not implemented: an OS sandbox, deterministic
+replay, hooks/MCP/plugins.
+
 ## Muse Code fidelity
 
-The harness interface is captured from a live Muse Code 1.2.1 session (model
-`muse-spark-1.3-contributor`) rather than reconstructed from docs, and is verified
-against that capture by a traffic-interception harness (`npm run muse:parity`):
-
-- **System prompt** — the exact runtime `instructions` (40,445 chars), sent in the
-  Responses `instructions` field. Captured copy:
-  https://github.com/souta-lab/muse-code-system-prompt
-- **Tool surface** — one Responses `namespace` group named `muse` (`Muse Code tool
-  set.`) containing all 29 function tools in the captured order, with byte-identical
-  descriptions and parameter schemas.
-- **Per-session context** — the captured `developer` message (workspace identity,
-  permission mode, `workflow-choice`/`workflow-cookbook`, subagent delegation, the
-  18-skill catalog, and `session-identity`) reproduced byte-for-byte.
+The interface was captured from a live Muse Code 1.2.1 session (`muse-spark-1.3-contributor`)
+rather than reconstructed from docs: the runtime `instructions`, the `muse` namespace
+tool group, and the per-session `developer` message. The captured prompt is mirrored at
+https://github.com/souta-lab/muse-code-system-prompt.
 
 | Area | Status |
 |---|---|
@@ -159,15 +167,34 @@ Install the binary first with `npm link -w @earendil-works/pi-coding-agent`, or 
 the bundled CLI directly with
 `node packages/coding-agent/dist/bundle/cli.js --provider muse --model muse-spark-1.3-contributor`.
 
+Approval is fixed at launch: `--disable-approval` never prompts, `--disable-sandbox`
+marks the sandbox off, and `--yolo` implies both plus workspace trust. Without a bypass,
+a mutating tool call is denied in a session that has no interactive UI. A tool call that
+was interrupted mid-run is reported when the session is resumed instead of being
+silently continued.
+
+Verify the harness against the real CLI at any time:
+
+```bash
+npm run muse:parity                                          # first request + parameters
+node scripts/muse-proxy/run-parity.mjs --fixture tool-call    # adds the round trip
+```
+
 ## License and attribution
 
 - The code is **MIT**, inherited from upstream Pi (`LICENSE`, Copyright (c) 2025
   Mario Zechner) plus this fork's contributions.
-- `packages/coding-agent/src/core/muse-system-prompt.ts` contains the system prompt of
-  Meta's Muse Code agent, **captured from a live Muse Code session**. That text is
-  third-party content, is **not** covered by the MIT license, and remains the property of
-  Meta. It is included only for interoperability and research. Remove or replace it (for
-  example with a custom `~/.pi/SYSTEM.md`) if you are a rights holder or do not want it.
+- The following **captured Muse Code content** is third-party material, is **not**
+  covered by the MIT license, and remains the property of Meta. It is included only for
+  interoperability and research; remove or replace it if you are a rights holder or do
+  not want it:
+  - `packages/coding-agent/src/core/muse-system-prompt.ts` — Muse Code's system prompt,
+    captured from a live Muse Code session. Replace it with a custom `~/.pi/SYSTEM.md`
+    if you would rather not ship it.
+  - `packages/coding-agent/src/core/muse-skills/**` — the 18 bundled skill bodies,
+    extracted from the distributed Muse Code 1.2.1 binary.
+  - `packages/coding-agent/test/fixtures/muse/**` and `scripts/muse-proxy/fixtures/**` —
+    captured Requests, tool schemas, and the developer message, used as test fixtures.
   Captured copy: https://github.com/souta-lab/muse-code-system-prompt
 
 ---
