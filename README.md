@@ -45,10 +45,16 @@ Two deliberate deviations:
 
 1. **Plain tool names.** Muse ships its tools inside a Responses `namespace` group and
    addresses them as `muse.read_file`; Pi has no namespace tool type, and OpenAI-style
-   function names cannot contain `.`, so the prompt is rewritten to the plain names.
+   function names cannot contain `.`, so the prompt is rewritten to the plain names and
+   the tools are sent as 16 flat function tools instead of one `muse` group.
 2. **Per-session context transport.** Muse delivers the workspace root, permission mode,
    delegation posture, and skill catalog in a separate `developer` message; `pi-muse`
    appends the same content to the system prompt because Pi has no `developer` role.
+3. **System prompt transport.** Muse sends the prompt in the Responses `instructions`
+   field; Pi's provider layer has a single system-prompt channel, which lands in the
+   request `input` as the first `developer` item. The text is byte-identical — only the
+   field that carries it differs. Closing this needs a separate `instructions` channel
+   through `Context`, not a `coding-agent` change.
 
 ### Fidelity at a glance
 
@@ -64,7 +70,7 @@ regresses.
 | Tool descriptions | 13,445 / 13,505 chars | **99.6%** |
 | Tool coverage | 22 / 22 | **100%** |
 | Per-session context (Muse's `developer` message) | 19,340 / 19,340 chars, byte-identical | **100%** |
-| Request parameters (`store`, cache key, reasoning effort/summary, `include`, `stream`, `max_output_tokens`) | 6 / 6 match | 100% |
+| Request parameters (`store`, cache key, reasoning effort/summary, `include`, `stream`, `max_output_tokens`) | 6 / 6 match (the prompt rides in `input` rather than `instructions`, and tools are flat — see the deviations above) | 100% |
 | Tool behavior (result wording, errors, flags) | per-tool tests + a differential run against the real CLI | 90% |
 | **Model-facing surface** | prompt, schemas, descriptions, coverage, context, params | **~98%** |
 | Harness (approvals, sandbox, event log/resume, notifications, PTY on macOS/Windows) | out of scope | ~10% |
