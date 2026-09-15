@@ -1,11 +1,21 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
-import { createMuseToolDefinitions } from "../src/core/tools/muse.ts";
+import {
+	consumeReminderSnooze,
+	createMuseToolDefinitions,
+	createSnoozeReminderToolDefinition,
+	resetReminderSnoozes,
+} from "../src/core/tools/muse.ts";
 
 const tempDirs: string[] = [];
+
+function museFixture(name: string): string {
+	return fileURLToPath(new URL(`./fixtures/muse/${name}`, import.meta.url));
+}
 
 function makeTempDir(): string {
 	const dir = mkdtempSync(join(tmpdir(), "pi-muse-tool-"));
@@ -17,6 +27,7 @@ const ctx = (cwd: string): ExtensionContext => ({ cwd }) as unknown as Extension
 
 afterEach(() => {
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+	resetReminderSnoozes();
 });
 
 describe("read_file", () => {
@@ -302,5 +313,91 @@ describe("memory offset window", () => {
 			if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = previous;
 		}
+	});
+});
+
+describe("description parity with the official Muse captures", () => {
+	it("matches every official description after replacing muse.<toolname> with <toolname>", () => {
+		const official = JSON.parse(readFileSync(museFixture("descriptions.json"), "utf-8")) as Record<string, string>;
+		const definitions = createMuseToolDefinitions(makeTempDir());
+		const ours: Record<string, string> = { snooze_reminder: createSnoozeReminderToolDefinition().description };
+		for (const [name, definition] of Object.entries(definitions)) ours[name] = definition.description;
+
+		expect(Object.keys(ours)).toHaveLength(16);
+		let ourChars = 0;
+		let officialChars = 0;
+		for (const [name, description] of Object.entries(ours)) {
+			const expected = (official[name] ?? "").replaceAll("muse.", "");
+			expect(expected.length, `official description missing for ${name}`).toBeGreaterThan(0);
+			expect(description, `description mismatch for ${name}`).toBe(expected);
+			ourChars += description.length;
+			officialChars += expected.length;
+		}
+		expect(ourChars / officialChars).toBeGreaterThanOrEqual(0.99);
+	});
+});
+
+describe("snooze_reminder", () => {
+	const snooze = () => createSnoozeReminderToolDefinition();
+
+	it("keeps the official schema bounds and required fields", () => {
+		const schema = JSON.parse(JSON.stringify(snooze().parameters)) as {
+			properties: {
+				duration_steps: { minimum: number; maximum: number };
+				reminder_kind: { type: string };
+				subject_key?: { type: string };
+			};
+			required: string[];
+			additionalProperties: boolean;
+		};
+		expect(schema.properties.duration_steps.minimum).toBe(1);
+		expect(schema.properties.duration_steps.maximum).toBe(32);
+		expect(schema.properties.reminder_kind.type).toBe("string");
+		expect(schema.properties.subject_key?.type).toBe("string");
+		expect(schema.required).toEqual(["reminder_kind", "duration_steps"]);
+		expect(schema.additionalProperties).toBe(false);
+	});
+
+	it("suppresses a matching reminder for duration_steps model request steps", async () => {
+		const result = await snooze().execute(
+			"s",
+			{ reminder_kind: "skill", duration_steps: 2 },
+			undefined,
+			undefined,
+			ctx(makeTempDir()),
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("'skill'");
+		expect(text).toContain("2 model request steps");
+
+		expect(consumeReminderSnooze("skill")).toBe(true);
+		expect(consumeReminderSnooze("skill")).toBe(true);
+		expect(consumeReminderSnooze("skill")).toBe(false);
+		expect(consumeReminderSnooze("memory")).toBe(false);
+	});
+
+	it("narrows a snooze to an exact subject_key", async () => {
+		await snooze().execute(
+			"s",
+			{ reminder_kind: "skill", duration_steps: 1, subject_key: "alpha" },
+			undefined,
+			undefined,
+			ctx(makeTempDir()),
+		);
+		expect(consumeReminderSnooze("skill", "beta")).toBe(false);
+		expect(consumeReminderSnooze("skill", "alpha")).toBe(true);
+		expect(consumeReminderSnooze("skill", "alpha")).toBe(false);
+	});
+
+	it("suppresses every subject when stored without a subject_key", async () => {
+		await snooze().execute(
+			"s",
+			{ reminder_kind: "memory", duration_steps: 1 },
+			undefined,
+			undefined,
+			ctx(makeTempDir()),
+		);
+		expect(consumeReminderSnooze("memory", "any-subject")).toBe(true);
+		expect(consumeReminderSnooze("memory", "any-subject")).toBe(false);
 	});
 });

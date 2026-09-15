@@ -1094,12 +1094,18 @@ export class AgentSession {
 			promptGuidelines,
 		};
 		const basePrompt = buildSystemPrompt(this._baseSystemPromptOptions);
-		const developerContext = buildMuseDeveloperContext({
-			cwd: this._cwd,
-			trusted: this.settingsManager.isProjectTrusted(),
-			skills: loadedSkills,
-			subagentsAvailable: this._toolRegistry.has("subagent_spawn"),
-		});
+		// Muse delivers this developer context together with its own tool surface, so a
+		// session without the Muse tools (a Pi-native or test-harness session) keeps the
+		// plain prompt instead of a skill catalog and workflow policy it cannot act on.
+		const developerContext = this._toolRegistry.has("read_file")
+			? buildMuseDeveloperContext({
+					cwd: this._cwd,
+					trusted: this.settingsManager.isProjectTrusted(),
+					skills: loadedSkills,
+					subagentsAvailable: this._toolRegistry.has("subagent_spawn"),
+					workflowAvailable: this._toolRegistry.has("workflow"),
+				})
+			: "";
 		return developerContext ? `${basePrompt}\n\n${developerContext}` : basePrompt;
 	}
 

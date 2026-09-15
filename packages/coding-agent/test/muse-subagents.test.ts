@@ -59,6 +59,7 @@ describe("muse-subagents bridge", () => {
 		expect([...available.tools.keys()].sort()).toEqual([
 			"subagent_cancel",
 			"subagent_read_result",
+			"subagent_send_message",
 			"subagent_spawn",
 			"subagent_status",
 			"subagent_wait",
@@ -84,5 +85,26 @@ describe("muse-subagents bridge", () => {
 			worktree_isolation: true,
 		})) as { content: Array<{ text: string }> };
 		expect(result.content[0].text).toContain("agent-1");
+	});
+
+	it("reports subagent_send_message as unsupported by the pi-subagents RPC", async () => {
+		const fake = createFakeApi(true);
+		museSubagentsExtension(fake.api);
+		await fake.start();
+
+		const send = fake.tools.get("subagent_send_message");
+		const noTarget = (await send?.execute("t", { command_id: "c2", message: "check the auth flow" })) as {
+			content: Array<{ text: string }>;
+		};
+		expect(noTarget.content[0].text).toContain("subagent_id or agent_path is required");
+
+		const result = (await send?.execute("t", {
+			command_id: "c2",
+			message: "check the auth flow",
+			subagent_id: "agent-1",
+			mode: "followup",
+		})) as { content: Array<{ text: string }>; details: Record<string, unknown> };
+		expect(result.content[0].text).toContain("unsupported by the installed pi-subagents RPC");
+		expect(result.details).toMatchObject({ error: "unsupported_by_pi_subagents_rpc", delivered: false });
 	});
 });

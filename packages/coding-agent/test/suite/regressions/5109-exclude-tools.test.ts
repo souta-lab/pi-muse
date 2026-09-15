@@ -61,9 +61,11 @@ describe("regression #5109: exclude tools", () => {
 				"read_memory",
 				"read_skill",
 				"search",
+				"snooze_reminder",
 				"web_search",
 				"work_status",
 				"work_stop",
+				"workflow",
 				"write_file",
 				"write_todos",
 			]);

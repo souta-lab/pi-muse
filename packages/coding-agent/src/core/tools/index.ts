@@ -118,12 +118,14 @@ import {
 	createReadMemoryToolDefinition,
 	createReadSkillToolDefinition,
 	createSearchToolDefinition,
+	createSnoozeReminderToolDefinition,
 	createWebSearchToolDefinition,
 	createWorkStatusToolDefinition,
 	createWorkStopToolDefinition,
 	createWriteFileToolDefinition,
 	createWriteTodosToolDefinition,
 } from "./muse.ts";
+import { createWorkflowToolDefinition, type WorkflowToolOptions } from "./muse-workflow.ts";
 import { createPowerShellTool, createPowerShellToolDefinition, type PowerShellToolOptions } from "./powershell.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -152,7 +154,9 @@ export type ToolName =
 	| "work_status"
 	| "work_stop"
 	| "web_search"
-	| "write_todos";
+	| "write_todos"
+	| "snooze_reminder"
+	| "workflow";
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
 	"bash",
@@ -175,6 +179,8 @@ export const allToolNames: Set<ToolName> = new Set([
 	"work_stop",
 	"web_search",
 	"write_todos",
+	"snooze_reminder",
+	"workflow",
 ]);
 
 export interface ToolsOptions {
@@ -186,6 +192,7 @@ export interface ToolsOptions {
 	grep?: GrepToolOptions;
 	find?: FindToolOptions;
 	ls?: LsToolOptions;
+	workflow?: WorkflowToolOptions;
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
@@ -232,6 +239,10 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createWebSearchToolDefinition();
 		case "write_todos":
 			return createWriteTodosToolDefinition();
+		case "snooze_reminder":
+			return createSnoozeReminderToolDefinition();
+		case "workflow":
+			return createWorkflowToolDefinition(cwd, options?.workflow);
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -281,6 +292,10 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return wrapToolDefinition(createWebSearchToolDefinition());
 		case "write_todos":
 			return wrapToolDefinition(createWriteTodosToolDefinition());
+		case "snooze_reminder":
+			return wrapToolDefinition(createSnoozeReminderToolDefinition());
+		case "workflow":
+			return wrapToolDefinition(createWorkflowToolDefinition(cwd, options?.workflow));
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -362,5 +377,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		work_stop: wrapToolDefinition(createWorkStopToolDefinition()),
 		web_search: wrapToolDefinition(createWebSearchToolDefinition()),
 		write_todos: wrapToolDefinition(createWriteTodosToolDefinition()),
+		snooze_reminder: wrapToolDefinition(createSnoozeReminderToolDefinition()),
+		workflow: wrapToolDefinition(createWorkflowToolDefinition(cwd, options?.workflow)),
 	};
 }

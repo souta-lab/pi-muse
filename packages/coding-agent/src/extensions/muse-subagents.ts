@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import type { ExtensionAPI } from "../core/extensions/types.ts";
+import type { AgentToolResult, ExtensionAPI } from "../core/extensions/types.ts";
 
 /**
  * Bridges Muse's subagent tools onto the community `@tintinweb/pi-subagents`
@@ -24,6 +24,21 @@ const RPC_PING = "subagents:rpc:ping";
 const RPC_SPAWN = "subagents:rpc:spawn";
 const RPC_STOP = "subagents:rpc:stop";
 const RPC_CONSUME = "subagents:rpc:consume";
+
+/**
+ * `subagent_send_message` has no counterpart on the pi-subagents RPC bus.
+ * Protocol v2 (`registerRpcHandlers` in @tintinweb/pi-subagents, still current
+ * on master and in the latest published 0.19.0) registers exactly four
+ * channels — ping, spawn, stop, consume — and its docs/rpc.md says the same.
+ * Message delivery to a running child exists only in-process: `AgentManager.steer()`
+ * backs the extension's own `steer_subagent` tool and fleet UI, and `nested-tools.ts`
+ * calls `session.steer()` directly. Neither crosses the event bus, so until
+ * upstream exposes a send/steer RPC (e.g. `subagents:rpc:send`) this tool
+ * reports the gap instead of faking delivery with a second spawn.
+ */
+const SEND_MESSAGE_UNSUPPORTED =
+	"Protocol v2 exposes only subagents:rpc:ping, subagents:rpc:spawn, subagents:rpc:stop and subagents:rpc:consume; " +
+	"sending needs an upstream send/steer RPC backed by AgentManager.steer(), which is currently reachable only in-process.";
 
 const LIFECYCLE: Array<[string, string]> = [
 	["subagents:created", "created"],
@@ -84,7 +99,8 @@ export default function museSubagentsExtension(pi: ExtensionAPI): void {
 		pi.registerTool({
 			name: "subagent_spawn",
 			label: "subagent_spawn",
-			description: "Spawn a child agent. Returns a handle used by the other subagent tools.",
+			description:
+				"Spawn a simple child agent. The root Agent Tree can execute up to 8 agents at once by default, including the root; the configured limit may vary from 1 to 64. A spawn attempted while the root pool is full is rejected with root_capacity_exhausted; wait for an Agent to finish before retrying. An accepted child may remain queued by the host-scaled runtime scheduler and starts automatically when a scheduler slot frees. Choose worktree_isolation (true or an empty object) when the user requests subagent isolation or when parallel children may write, because concurrent writers can corrupt a shared checkout even when their intended files differ. Keep read-only children in the shared checkout. Isolation may be unavailable for the current profile or workspace.",
 			parameters: Type.Object({
 				command_id: Type.String({ description: "Caller-supplied idempotency id." }),
 				role: Type.String({ description: "Role or agent type for the child." }),
@@ -117,9 +133,55 @@ export default function museSubagentsExtension(pi: ExtensionAPI): void {
 		});
 
 		pi.registerTool({
+			name: "subagent_send_message",
+			label: "subagent_send_message",
+			description: "Queue a message for a running child. Pass the spawn-returned subagent_id or exact agent_path.",
+			parameters: Type.Object({
+				command_id: Type.String({ description: "Idempotency key for this operation; does not select the child." }),
+				message: Type.String(),
+				subagent_id: Type.Optional(Type.String()),
+				agent_path: Type.Optional(Type.String()),
+				mode: Type.Optional(Type.Union([Type.Literal("queue"), Type.Literal("followup")])),
+				interrupt: Type.Optional(Type.Boolean()),
+				artifact_ref: Type.Optional(Type.String()),
+			}),
+			execute: async (_id, input: Record<string, unknown>): Promise<AgentToolResult<Record<string, unknown>>> => {
+				const target = readString(input.subagent_id) ?? readString(input.agent_path);
+				if (!target) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: "subagent_send_message failed: subagent_id or agent_path is required",
+							},
+						],
+						details: {},
+					};
+				}
+				const mode = readString(input.mode) ?? "queue";
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text:
+								`subagent_send_message failed: unsupported by the installed pi-subagents RPC — ` +
+								`the ${mode} message for ${target} was not delivered. ${SEND_MESSAGE_UNSUPPORTED}`,
+						},
+					],
+					details: {
+						error: "unsupported_by_pi_subagents_rpc",
+						missing_upstream_method: "AgentManager.steer() is not exposed over the pi-subagents RPC bus",
+						delivered: false,
+						target,
+					},
+				};
+			},
+		});
+
+		pi.registerTool({
 			name: "subagent_status",
 			label: "subagent_status",
-			description: "Read the current state of one or more child agents.",
+			description: "Read subagent status from the replayable owner registry.",
 			parameters: Type.Object({ subagent_id: Type.Optional(Type.String({ description: "Child agent id." })) }),
 			execute: async (_id, input: Record<string, unknown>) => {
 				const id = readString(input.subagent_id);
@@ -136,7 +198,8 @@ export default function museSubagentsExtension(pi: ExtensionAPI): void {
 		pi.registerTool({
 			name: "subagent_wait",
 			label: "subagent_wait",
-			description: "Block until a child agent settles, then return its status.",
+			description:
+				"Wait for a child result. timeout_ms defaults to 30000 ms and accepts 10000-300000. timeout or would_park leaves the child running. Finished results arrive automatically when your session is idle. Use subagent_cancel to stop the child. Pass the spawn-returned subagent_id or exact agent_path.",
 			parameters: Type.Object({
 				subagent_id: Type.String({ description: "Child agent id." }),
 				timeout_ms: Type.Optional(Type.Integer({ minimum: 1, description: "Maximum wait in milliseconds." })),
@@ -161,7 +224,8 @@ export default function museSubagentsExtension(pi: ExtensionAPI): void {
 		pi.registerTool({
 			name: "subagent_read_result",
 			label: "subagent_read_result",
-			description: "Read a settled child agent's result text.",
+			description:
+				"Read a bounded result envelope and artifact refs. Pass the spawn-returned subagent_id or exact agent_path.",
 			parameters: Type.Object({ subagent_id: Type.String({ description: "Child agent id." }) }),
 			execute: async (_id, input: Record<string, unknown>) => {
 				const id = readString(input.subagent_id);
@@ -181,7 +245,7 @@ export default function museSubagentsExtension(pi: ExtensionAPI): void {
 		pi.registerTool({
 			name: "subagent_cancel",
 			label: "subagent_cancel",
-			description: "Stop a running child agent.",
+			description: "Request child cancellation. Pass the spawn-returned subagent_id or exact agent_path.",
 			parameters: Type.Object({
 				command_id: Type.String({ description: "Caller-supplied idempotency id." }),
 				subagent_id: Type.String({ description: "Child agent id." }),

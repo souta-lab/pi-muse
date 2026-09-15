@@ -43,3 +43,6 @@ plans/
 .pi/hf-sessions-backup/
 collect.sh
 packages/agent/docs/extensions/pi-server-artifact/index.md
+
+# pi-muse: local wire-capture output (see scripts/muse-wire-capture.mjs)
+/tmp/

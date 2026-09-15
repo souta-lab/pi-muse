@@ -13,15 +13,18 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
+import { readMuseBundledSkillBody } from "../muse-skills/index.ts";
 import { bashToolSystemPromptContribution } from "./bash.ts";
 import { createEditToolDefinition, type EditToolDetails, type EditToolOptions } from "./edit.ts";
 import { runMuseSearch } from "./muse-search.ts";
+import { createWorkflowToolDefinition, type WorkflowToolOptions } from "./muse-workflow.ts";
 import { createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { truncateTail } from "./truncate.ts";
 import { createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
 
 export const MUSE_TOOL_NAMES = [
+	"workflow",
 	"read_file",
 	"write_file",
 	"edit_file",
@@ -36,6 +39,7 @@ export const MUSE_TOOL_NAMES = [
 	"work_stop",
 	"web_search",
 	"write_todos",
+	"snooze_reminder",
 ] as const;
 
 export type MuseToolName = (typeof MUSE_TOOL_NAMES)[number];
@@ -453,7 +457,7 @@ export function createWriteFileToolDefinition(cwd: string, options?: WriteToolOp
 		name: "write_file",
 		label: "write_file",
 		description:
-			"Create or overwrite a complete UTF-8 file. For a LARGE file, write a small first chunk here and then grow it with edit_file; one huge write can exceed a single model response and fail to send.",
+			"Create or overwrite a complete UTF-8 file admitted by the current filesystem policy. For a LARGE file, write a small first chunk here and then grow it with edit_file — one huge write can exceed a single model response and fail to send.",
 		promptSnippet: base.promptSnippet,
 		promptGuidelines: base.promptGuidelines,
 		parameters: writeFileSchema,
@@ -482,7 +486,7 @@ export function createEditFileToolDefinition(
 		name: "edit_file",
 		label: "edit_file",
 		description:
-			"Replace one unique exact text match in a file. Also use this to grow a large file in steps: match its current last line(s) and replace them with those line(s) plus more.",
+			"Replace one unique exact text match in a file admitted by the current filesystem policy. Also use this to GROW a large file in steps: match its current last line(s) and replace them with those line(s) plus more, so you never send one huge write_file that can fail.",
 		promptSnippet: "Edit files with an exact find/replace pair",
 		promptGuidelines: ["Use edit_file for precise changes (find must match exactly once)"],
 		parameters: editFileSchema,
@@ -504,7 +508,7 @@ export function createSearchToolDefinition(cwd: string): ToolDefinition<any, any
 		name: "search",
 		label: "search",
 		description:
-			"Search files with native ripgrep semantics. Results are confined to the workspace and respect ignore files by default.",
+			"Search files with native ripgrep semantics. Results are confined by the current filesystem policy and emitted through tool output. Prefer this tool over shelling out to `rg`, `find`, or `grep -r` via bash: it is policy-confined, output-bounded, and watchdog-bounded, so it cannot fan out into runaway background processes over a large tree.",
 		promptSnippet: "Search file contents for patterns (respects .gitignore)",
 		parameters: searchSchema,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
@@ -527,7 +531,7 @@ export function createMuseBashToolDefinition(cwd: string): ToolDefinition<any, B
 		name: "bash",
 		label: "bash",
 		description:
-			"Run a bash-compatible shell command. Waits in the foreground up to yield_time_ms (default 10000ms), then returns an internal session_id for a still-running command; its final output arrives later as runtime context.",
+			"Run a bash-compatible shell command. By default the runtime waits at most 10 seconds in the foreground; for a slow build or test, pass a larger yield_time_ms (up to 300000) to wait for it to finish in this one call. Commands still running after the wait remain managed by the runtime and return an internal session_id handle for bash_input; final output arrives later as runtime context. The UI already shows running background status. Do not narrate backgrounding, session ids, current output, or wake/delivery mechanics: do not tell the user a command moved to the background, do not quote session ids, and do not mention delivery mechanics unless they explicitly ask. If there is no substantive next work after a command backgrounds, end the turn without extra status text. Use bash_input only to send input to or terminate that live session, not to poll a backgrounded command for completion — the final output is delivered automatically. Exception: when a runtime overdue notice names a still-running session, you may inspect it or terminate it with bash_input now. Never point a recursive content scan (`rg`, `grep -r`, `find | xargs grep`) at the workspace root or an unverified-size tree — use search (bounded) or scope the scan to the subtree the task names. A scan that backgrounds is yours: harvest its result or terminate it via bash_input before ending the turn; never re-issue a broader variant while an earlier run is pending — a pending scan is not a negative result.",
 		promptSnippet: "Execute bash commands",
 		promptGuidelines: [...bashToolSystemPromptContribution.guidelines],
 		parameters: bashSchema,
@@ -654,7 +658,7 @@ export function createBashInputToolDefinition(): ToolDefinition<any, BashInputDe
 		name: "bash_input",
 		label: "bash_input",
 		description:
-			"Send input to, or terminate, a running bash session using the session_id returned by bash. Each response returns only output not returned by an earlier response; original_output_bytes remains cumulative.",
+			"Send input to or terminate a running bash PTY session using the internal session_id handle returned by bash — use it when a live interactive process needs input. Do not use it to poll a backgrounded command for completion: the final result is delivered automatically as runtime context, even after the turn ends. Each response returns only output not returned by an earlier response for that session; empty output with terminal status means all bytes were already delivered, while original_output_bytes remains cumulative. Exception: when a runtime overdue notice names a still-running session, you may inspect it or terminate it with bash_input now. Do not narrate backgrounding, session ids, or delivery mechanics to the user unless asked.",
 		promptSnippet: "Send input to a running bash session",
 		promptGuidelines: [],
 		parameters: bashInputSchema,
@@ -734,7 +738,8 @@ export function createReadMemoryToolDefinition(): ToolDefinition<any, undefined>
 	return {
 		name: "read_memory",
 		label: "read_memory",
-		description: "Read a bounded line window from one local Markdown memory file. Reads never write to memory.",
+		description:
+			"Read a bounded line window from one local Markdown memory file. Use this when you need live memory content; reads never write to memory.",
 		promptSnippet: "Read a local memory file",
 		parameters: readMemorySchema,
 		execute(_toolCallId, input: Static<typeof readMemorySchema>) {
@@ -757,7 +762,7 @@ export function createAddMemoryToolDefinition(): ToolDefinition<any, undefined> 
 		name: "add_memory",
 		label: "add_memory",
 		description:
-			"Add Markdown content to local memory: creates the file when missing, appends when it exists, and does not overwrite existing content.",
+			"Add Markdown content to local memory: creates the file when it is missing, appends to the end when it already exists, and does not overwrite existing content. Use edit_memory for exact replacements.",
 		promptSnippet: "Append to a local memory file",
 		parameters: addMemorySchema,
 		execute(_toolCallId, input: Static<typeof addMemorySchema>) {
@@ -784,7 +789,7 @@ export function createEditMemoryToolDefinition(): ToolDefinition<any, undefined>
 		name: "edit_memory",
 		label: "edit_memory",
 		description:
-			"Replace one exact string in local memory. The edit fails unless old_str appears exactly once; use add_memory to append new content.",
+			"Replace one exact string in local Markdown memory. The edit fails unless old_str appears exactly once; use add_memory to append new content.",
 		promptSnippet: "Edit a local memory file",
 		parameters: editMemorySchema,
 		execute(_toolCallId, input: Static<typeof editMemorySchema>) {
@@ -820,6 +825,12 @@ export function createReadSkillToolDefinition(cwd: string): ToolDefinition<any, 
 		parameters: readSkillSchema,
 		execute(_toolCallId, input: Static<typeof readSkillSchema>) {
 			return (async () => {
+				if (/^(?:bundled|plugin):/.test(input.name.trim())) {
+					const bundled = readMuseBundledSkillBody(input.name);
+					if (bundled !== undefined) {
+						return { content: [{ type: "text" as const, text: bundled }], details: undefined };
+					}
+				}
 				const wanted = input.name.replace(/^(bundled|plugin|project|personal):\/\//, "");
 				const roots = [join(cwd, ".pi", "skills"), join(getAgentDir(), "skills")];
 				for (const root of roots) {
@@ -844,6 +855,10 @@ export function createReadSkillToolDefinition(cwd: string): ToolDefinition<any, 
 						}
 					}
 				}
+				const bundled = readMuseBundledSkillBody(input.name);
+				if (bundled !== undefined) {
+					return { content: [{ type: "text" as const, text: bundled }], details: undefined };
+				}
 				throw new Error(`Skill not found: ${input.name}`);
 			})();
 		},
@@ -866,7 +881,8 @@ export function createWorkStatusToolDefinition(): ToolDefinition<any, undefined>
 	return {
 		name: "work_status",
 		label: "work_status",
-		description: "Read the current state of one Work item by its canonical Work ID (a background bash session id).",
+		description:
+			"Read the current state of one Work item by its canonical Work ID. This is a bounded, read-only lookup; use returned artifact references only when more detail is needed.",
 		promptSnippet: "Check a background work item",
 		parameters: workIdSchema,
 		execute(_toolCallId, input: Static<typeof workIdSchema>) {
@@ -890,7 +906,8 @@ export function createWorkStopToolDefinition(): ToolDefinition<any, undefined> {
 	return {
 		name: "work_stop",
 		label: "work_stop",
-		description: "Stop one runtime-owned work item by canonical Work ID (terminates the background bash session).",
+		description:
+			"Stop one runtime-owned work item by canonical Work ID, such as a launched workflow run or other long-running background work.",
 		promptSnippet: "Stop a background work item",
 		parameters: workIdSchema,
 		execute(_toolCallId, input: Static<typeof workIdSchema>) {
@@ -908,6 +925,85 @@ export function createWorkStopToolDefinition(): ToolDefinition<any, undefined> {
 					details: undefined,
 				};
 			})();
+		},
+	};
+}
+
+const snoozeReminderSchema = Type.Object(
+	{
+		reminder_kind: Type.String({
+			description:
+				"The kind attribute from the <system-reminder> notification to suppress (e.g. 'skill', 'memory'). This is NOT the agent id.",
+		}),
+		duration_steps: Type.Integer({
+			minimum: 1,
+			maximum: 32,
+			description: "Number of model request steps to suppress matching reminders.",
+		}),
+		subject_key: Type.Optional(Type.String({ description: "Optional narrower subject key to suppress." })),
+	},
+	{ additionalProperties: false },
+);
+
+interface ReminderSnooze {
+	reminderKind: string;
+	subjectKey?: string;
+	remainingSteps: number;
+}
+
+const reminderSnoozes = new Map<string, ReminderSnooze>();
+
+function reminderSnoozeKey(reminderKind: string, subjectKey?: string): string {
+	return `${reminderKind}\u0000${subjectKey ?? ""}`;
+}
+
+/**
+ * Consume one model request step from a matching snooze. Returns true when a snooze was active.
+ * Reminder kinds must match exactly; a caller subjectKey matches an exact stored subject key or a
+ * snooze stored without a subject key (which suppresses every subject of that kind).
+ */
+export function consumeReminderSnooze(reminderKind: string, subjectKey?: string): boolean {
+	for (const [key, snooze] of reminderSnoozes) {
+		if (snooze.reminderKind !== reminderKind) continue;
+		if (subjectKey !== undefined && snooze.subjectKey !== undefined && snooze.subjectKey !== subjectKey) continue;
+		snooze.remainingSteps -= 1;
+		if (snooze.remainingSteps <= 0) reminderSnoozes.delete(key);
+		return true;
+	}
+	return false;
+}
+
+/** Drop every snooze window. Intended for tests. */
+export function resetReminderSnoozes(): void {
+	reminderSnoozes.clear();
+}
+
+export function createSnoozeReminderToolDefinition(): ToolDefinition<typeof snoozeReminderSchema, undefined> {
+	return {
+		name: "snooze_reminder",
+		label: "snooze_reminder",
+		description: "Temporarily suppress matching async reminder notifications.",
+		promptSnippet: "Snooze async reminder notifications",
+		parameters: snoozeReminderSchema,
+		execute(_toolCallId, input: Static<typeof snoozeReminderSchema>) {
+			const key = reminderSnoozeKey(input.reminder_kind, input.subject_key);
+			const existing = reminderSnoozes.get(key);
+			const remainingSteps = Math.max(existing?.remainingSteps ?? 0, input.duration_steps);
+			reminderSnoozes.set(key, {
+				reminderKind: input.reminder_kind,
+				subjectKey: input.subject_key,
+				remainingSteps,
+			});
+			const subject = input.subject_key ? ` with subject '${input.subject_key}'` : "";
+			return Promise.resolve({
+				content: [
+					{
+						type: "text" as const,
+						text: `Snoozed reminders of kind '${input.reminder_kind}'${subject} for the next ${remainingSteps} model request steps.`,
+					},
+				],
+				details: undefined,
+			});
 		},
 	};
 }
@@ -974,7 +1070,7 @@ export function createWriteTodosToolDefinition(): ToolDefinition<typeof writeTod
 		name: "write_todos",
 		label: "write_todos",
 		description:
-			"Records the task's todo plan. Call it at the start of any task with three or more distinct steps, then update it as each step finishes. Always send the full list; keep exactly one item in_progress.",
+			"Records the task's todo plan, which the user sees as live progress. Call it at the start of any task with three or more distinct steps, then update it as each step finishes. Always send the full list; keep exactly one item in_progress. Skip it for trivial single-step tasks.",
 		promptSnippet: "Track a multi-step task as a todo list",
 		promptGuidelines: ["Use write_todos for genuinely multi-step work; mark a todo completed as soon as it is done"],
 		parameters: writeTodosSchema,
@@ -1002,6 +1098,7 @@ export interface MuseToolsOptions {
 	read?: ReadToolOptions;
 	write?: WriteToolOptions;
 	edit?: EditToolOptions;
+	workflow?: WorkflowToolOptions;
 }
 
 export function createMuseToolDefinitions(
@@ -1009,6 +1106,7 @@ export function createMuseToolDefinitions(
 	options?: MuseToolsOptions,
 ): Record<MuseToolName, ToolDefinition<any, any>> {
 	return {
+		workflow: createWorkflowToolDefinition(cwd, options?.workflow),
 		read_file: createReadFileToolDefinition(cwd, options?.read),
 		write_file: createWriteFileToolDefinition(cwd, options?.write),
 		edit_file: createEditFileToolDefinition(cwd, options?.edit),
@@ -1023,6 +1121,7 @@ export function createMuseToolDefinitions(
 		work_stop: createWorkStopToolDefinition(),
 		web_search: createWebSearchToolDefinition(),
 		write_todos: createWriteTodosToolDefinition(),
+		snooze_reminder: createSnoozeReminderToolDefinition(),
 	};
 }
 

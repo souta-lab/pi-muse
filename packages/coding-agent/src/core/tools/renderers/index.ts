@@ -52,6 +52,8 @@ export function createAllToolRenderers(): Record<ToolName, ToolRenderers> {
 		work_stop: {},
 		web_search: {},
 		write_todos: {},
+		snooze_reminder: {},
+		workflow: {},
 	};
 }
 

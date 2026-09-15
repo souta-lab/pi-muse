@@ -39,13 +39,14 @@ afterEach(() => {
 });
 
 describe("muse tools", () => {
-	it("exposes exactly the seven Muse tools", () => {
+	it("exposes exactly the Muse tool set", () => {
 		const cwd = makeTempDir();
 		const definitions = createMuseToolDefinitions(cwd);
 
 		expect(Object.keys(definitions)).toEqual([...MUSE_TOOL_NAMES]);
 		expect(Object.values(definitions).map((definition) => definition.name)).toEqual([...MUSE_TOOL_NAMES]);
 		expect(MUSE_TOOL_NAMES).toEqual([
+			"workflow",
 			"read_file",
 			"write_file",
 			"edit_file",
@@ -60,6 +61,7 @@ describe("muse tools", () => {
 			"work_stop",
 			"web_search",
 			"write_todos",
+			"snooze_reminder",
 		]);
 	});
 

@@ -431,6 +431,21 @@ export function getExportTemplateDir(): string {
 	return join(packageDir, srcOrDist, "core", "export-html");
 }
 
+/**
+ * Get path to the bundled Muse skill bodies (shipped with package)
+ * - For Bun binary: muse-skills/ next to executable
+ * - For Node.js (dist/): dist/core/muse-skills/
+ * - For tsx (src/): src/core/muse-skills/
+ */
+export function getMuseSkillsDir(): string {
+	if (isBunBinary) {
+		return join(getPackageDir(), "muse-skills");
+	}
+	const packageDir = getPackageDir();
+	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
+	return join(packageDir, srcOrDist, "core", "muse-skills");
+}
+
 /** Get path to package.json */
 export function getPackageJsonPath(): string {
 	return join(getPackageDir(), "package.json");
