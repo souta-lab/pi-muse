@@ -78,25 +78,59 @@ session id, the session-log path, and per-request ids.
 `@tintinweb/pi-subagents` manager, while Muse's re-entrant runner model and provider
 token ceilings are not implemented.
 
-## Testing fidelity
+## Testing
 
-- **Wire parity against the real CLI** — `npm run muse:parity` starts a local
-  TLS-terminating proxy, runs the real `muse` CLI and pi-muse against the same canned
-  response, and diffs both outbound requests: system prompt, tool surface, tool order,
-  `developer` context, request parameters, and (after a tool call) the tool-result
-  strings. `npm run muse:proxy` runs the proxy on its own for manual inspection. See
-  `scripts/muse-proxy/README.md`; the live captures it produced are committed under
-  `scripts/muse-proxy/fixtures/`.
-- `test/muse-wire-parity.test.ts` recomputes the fidelity table above from the captures
-  committed in `test/fixtures/muse/` and fails if any number regresses.
-- `./test.sh` runs the non-e2e suite. `test/muse-tools.test.ts`, `test/muse-goals.test.ts`,
-  `test/muse-cron.test.ts`, `test/muse-subagents.test.ts`, and `test/muse-integration.test.ts`
-  cover each tool family (result wording, error paths, session handling, persistence), and
-  `test/muse.test.ts` covers the prompt, providers, tool order, bash sessions, and memory.
-- **Live capture of pi-muse alone:** `npm run muse:capture` points pi-muse at a local
-  endpoint, sends one message, and writes the outbound request body for inspection. The
-  mirror of the captured Muse assets is published at
-  https://github.com/souta-lab/muse-code-system-prompt.
+`./test.sh` runs the non-e2e suite. The Muse work adds **245 tests across 15 files**,
+plus a wire-parity harness that compares against the real CLI.
+
+### Wire parity against the real CLI
+
+`npm run muse:parity` starts a local TLS-terminating proxy, runs the real `muse` CLI and
+pi-muse against the same canned response, and diffs both outbound requests. It reports
+six categories, and only inherently volatile values are normalized (workspace path,
+session id, session-log path, per-request ids):
+
+| Category | What is compared |
+|---|---|
+| System prompt | the `instructions` string, byte for byte (40,445 chars) |
+| Tool surface | all 29 tools by name: description text and every parameter, `required`, enum, bound, `additionalProperties`, and `strict` leaf |
+| Tool order | declaration order against the capture |
+| `developer` context | every section, in order, across the workspace identity, permission mode, `workflow-choice`/`workflow-cookbook`, subagent delegation, skill catalog, and `session-identity` |
+| Request parameters | `model`, `max_output_tokens`, `store`, `stream`, `reasoning`, `include`, input item count, and that no tool is invented |
+| Round trip | after replaying a tool call, the second request's tool-call sequence and tool-result strings |
+
+`npm run muse:proxy` runs the proxy alone for manual inspection; see
+`scripts/muse-proxy/README.md`. Live CLI captures are committed under
+`scripts/muse-proxy/fixtures/`, and `npm run muse:capture` records pi-muse's own request.
+The mirror of the captured Muse assets is published at
+https://github.com/souta-lab/muse-code-system-prompt.
+
+### In-repo suites
+
+| File | Tests | Covers |
+|---|---|---|
+| `muse-wire-parity.test.ts` | 8 | recomputes the Status numbers in-repo from `test/fixtures/muse/`: prompt bytes, tool schemas and descriptions, parameter leaves, request parameters, input item shape, the namespaced tool-call item, and `strict` on every inner tool |
+| `muse-namespace-resolution.test.ts` | 1 | a model-emitted `muse.<tool>` call resolves to the plain internal tool |
+| `muse-session-wire.test.ts` | 2 | the `instructions` / `developer` split reaches the request |
+| `muse-tools.test.ts` | 32 | per-tool behaviour and Muse result wording: `read_file` windows and line numbers, `write_file` byte count and absolute path, `edit_file` unique-match rules, `search` flags, `bash`/`bash_input` sessions, memory windows, and description parity against the capture |
+| `muse.test.ts` | 16 | tool set and order, `write_todos`, result formats, bash sessions, memory, provider defaults |
+| `muse-workflow.test.ts` | 44 | `workflow` schema parity, script persistence and `scriptHash`, `args` and the host API, guard rails (fan-out, call caps, timeouts), resume from a run id, and saved-registry lookup |
+| `muse-goals.test.ts` | 10 | goal create/get round trip, rejection of a second unfinished goal, status validation, `percent_complete=100` == complete, the `{"goal": null}` shape, and persistence |
+| `muse-cron.test.ts` | 40 | 5-field cron parsing, next-fire with an injected clock, the scheduler, the three cron tools, and persistence |
+| `muse-subagents.test.ts` | 21 | the pi-subagents bridge registration and the in-process child runner |
+| `muse-skills.test.ts` | 6 | the 18 bundled skills and developer-context parity |
+| `muse-reminders.test.ts` | 19 | reminder delivery, bounded cadence and in-turn dedupe, `snooze_reminder` integration, acknowledgement, and the built-in producers |
+| `muse-approval.test.ts` | 28 | permission-mode resolution, tool classification, approval-gate decisions (including fail-closed with no UI), the CLI flags, and permission-line rendering |
+| `muse-resume.test.ts` | 8 | dangling tool-call repair, the interrupted-turn notice, and the reserved tool-intent/result entries |
+| `muse-integration.test.ts` | 8 | the wiring: a denied tool is never executed, reminders reach the request, resume repairs a dangling call, and the model-visible tool surface stays the Muse set |
+| `muse-cli-defaults.test.ts` | 2 | the default provider/model and the catalog output caps |
+
+Upstream suites were adapted where this fork changes behaviour: `default-tools-setting`,
+`regressions/3592`, and `regressions/5109` (the tool list grew), and the compaction
+characterization tests (the Muse `developer` context is injected only for a Muse session).
+Three files need `rg`, which is not installed in this environment:
+`regressions/3302-find-path-glob`, `regressions/3303-find-nested-gitignore`, and
+`tools.test.ts`.
 
 ## What is different from upstream Pi
 
