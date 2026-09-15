@@ -31,6 +31,7 @@ import {
 	parseCliArgs,
 	readJsonFile,
 	TMP_ROOT,
+	writeFileGuarded,
 } from "./lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -47,6 +48,7 @@ const { options } = parseCliArgs(process.argv.slice(2), {
 	"min-fidelity": { type: "number", default: 0.75 },
 	"max-diff-lines": { type: "number", default: 120 },
 	"work-dir": { type: "string", default: "" },
+	"captures-dir": { type: "string", default: "" },
 	"cert-dir": { type: "string", default: DEFAULT_CERT_DIR },
 	"ssl-cert-file": { type: "string", default: "" },
 	"muse-bin": { type: "string", default: "" },
@@ -68,6 +70,7 @@ if (options.help) {
 			"  --live                  Forward to the OpenCode Go gateway instead of replaying.",
 			"  --min-fidelity <0..1>   Pass threshold (default 0.75).",
 			"  --work-dir <dir>        Scratch dir (default /tmp/opencode/muse-parity-<ts>).",
+			"  --captures-dir <dir>    Persisted capture root (default /tmp/opencode/muse-proxy-captures).",
 			"  --cert-dir <dir>        CA/leaf storage (default scripts/muse-proxy/.certs).",
 			"  --ssl-cert-file <path>  Override the CA file handed to the clients (default ca-bundle.pem).",
 			"  --muse-bin <path>       Real Muse CLI (default $MUSE_BIN or `muse` on PATH).",
@@ -290,7 +293,7 @@ function writeModelsJson(agentDir, baseUrl) {
 						input: ["text", "image"],
 						cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
 						contextWindow: 1007997,
-						maxTokens: 32768,
+						maxTokens: 128000,
 						thinkingLevelMap: {
 							off: null,
 							minimal: "minimal",
@@ -319,7 +322,6 @@ function piRunnerCandidates(prompt) {
 		`${PARITY_PROVIDER}/${MODEL}`,
 		"--thinking",
 		"high",
-		"--no-session",
 		"--no-skills",
 		"--no-context-files",
 		"--no-prompt-templates",
@@ -350,9 +352,36 @@ function piRunnerCandidates(prompt) {
 	return candidates;
 }
 
+/**
+ * Persist everything a run captured so it survives process exit. The scratch
+ * work dir is deleted unless `--keep`, which used to take the in-memory request
+ * bodies with it. Every path goes through `ensureDir`/`writeFileGuarded`, so
+ * the same `assertAllowedPath` guard as the rest of the harness applies.
+ */
+function persistCaptures(captureRoot, { fixture, museRequests, piRequests, museMain, piMain, diffs, manifest }) {
+	const written = {};
+	const write = (name, value) => {
+		written[name] = writeFileGuarded(join(captureRoot, name), `${JSON.stringify(value, null, "\t")}\n`);
+	};
+	write("manifest.json", manifest);
+	write("diff-summary.json", diffs);
+	write("muse-requests.json", museRequests);
+	write("pi-requests.json", piRequests);
+	write("muse-main-requests.json", museMain);
+	write("pi-main-requests.json", piMain);
+	if (fixture !== undefined) write("fixture.json", fixture);
+	return written;
+}
+
 async function main() {
 	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 	const workRoot = ensureDir(assertAllowedPath(options["work-dir"] || join(TMP_ROOT, `muse-parity-${timestamp}`)));
+	const capturesRoot = assertAllowedPath(
+		options["captures-dir"] || join(TMP_ROOT, "muse-proxy-captures"),
+		"captures dir",
+	);
+	const runId = `${timestamp}-${randomUUID().slice(0, 8)}`;
+	const captureRoot = ensureDir(join(capturesRoot, runId));
 	const fixturePath = options.live ? undefined : resolveFixture(options.fixture);
 	const fixture = fixturePath ? readJsonFile(fixturePath) : undefined;
 	const prompt = options.prompt || fixture?.prompt || "Reply with one short sentence describing the parity harness.";
@@ -571,18 +600,22 @@ async function main() {
 		);
 		const pairCount = Math.min(museMain.length, piMain.length);
 		const cwdPaths = [museWorkspace, piWorkspace];
+		const comparisons = [];
 		for (let i = 0; i < pairCount; i++) {
 			const comparison = compareRequests(museMain[i], piMain[i], {
 				cwdPaths,
 				minFidelity: options["min-fidelity"],
 				maxDiffLines: options["max-diff-lines"],
 			});
+			comparisons.push(comparison);
 			summary.pairs.push({
 				index: i,
 				label: i === 0 ? "first request" : `request ${i + 1}`,
 				score: comparison.score,
 				leafScore: comparison.leafScore,
 				toolScore: comparison.toolScore,
+				toolScoreUnion: comparison.toolScoreUnion,
+				toolCategories: comparison.toolCategories,
 				pass: comparison.pass,
 				corePass: comparison.corePass,
 			});
@@ -674,6 +707,71 @@ async function main() {
 				`\nnote: main-agent request counts differ (muse ${museMain.length}, pi-muse ${piMain.length}); compared ${pairCount} pair(s)\n`,
 			);
 		}
+
+		// Persist the full captures (request bodies included) so they survive
+		// process exit — the scratch workRoot is deleted unless --keep.
+		const captureManifest = {
+			runId,
+			mode: summary.mode,
+			replay: !options.live,
+			fixture: fixture?.name ?? null,
+			fixturePath: fixturePath ?? null,
+			prompt,
+			startedAt: timestamp,
+			workRoot,
+			captureRoot,
+			museRunner: museBin,
+			piRunner: piRunnerLabel,
+			museReachedProxy: summary.museReachedProxy,
+			piMuseReachedProxy: summary.piMuseReachedProxy,
+			museRequestCount: museRequests.length,
+			museMainRequestCount: museMain.length,
+			piRequestCount: piRequests.length,
+			piMainRequestCount: piMain.length,
+			pass: summary.pass,
+			corePass: summary.pairs.length > 0 && summary.pairs.every((pair) => pair.corePass),
+			pairs: summary.pairs,
+			behavior: {
+				expectedToolCall: fixtureExpectsToolCall,
+				falsePass,
+				behaviorPass,
+				equal: behaviorEqual,
+			},
+		};
+		const diffSummary = comparisons.map((comparison, index) => ({
+			index,
+			label: index === 0 ? "first request" : `request ${index + 1}`,
+			score: comparison.score,
+			leafScore: comparison.leafScore,
+			toolScore: comparison.toolScore,
+			toolScoreUnion: comparison.toolScoreUnion,
+			corePass: comparison.corePass,
+			pass: comparison.pass,
+			checks: comparison.checks,
+			sections: comparison.sections,
+			toolCategories: comparison.toolCategories,
+			toolOrder: comparison.toolOrder,
+			toolGaps: comparison.toolGaps,
+			tools: comparison.tools,
+			differences: comparison.differences,
+			headerDiff: comparison.headerDiff,
+			textual: comparison.textual,
+			structural: comparison.structural,
+		}));
+		const capturePaths = persistCaptures(captureRoot, {
+			fixture,
+			museRequests,
+			piRequests,
+			museMain,
+			piMain,
+			diffs: diffSummary,
+			manifest: captureManifest,
+		});
+		summary.captureRoot = captureRoot;
+		summary.captureFiles = capturePaths;
+		log(`captures persisted to ${captureRoot}`);
+		if (!options.json) process.stdout.write(`\ncaptures: ${captureRoot}\n`);
+
 		if (options.json) {
 			summary.museStderrTail = tail(museResult.stderr, 20);
 			summary.museStdoutTail = tail(museResult.stdout, 40);

@@ -85,6 +85,13 @@ export const MUSE_ACTIVE_TOOL_NAMES = [
 	"web_search",
 	"bash",
 	"bash_input",
+	"cron_create",
+	"cron_delete",
+	"cron_list",
+	"get_goal",
+	"create_goal",
+	"update_goal",
+	"report_progress",
 	"subagent_spawn",
 	"subagent_status",
 	"subagent_send_message",
@@ -95,7 +102,17 @@ export const MUSE_ACTIVE_TOOL_NAMES = [
 	"work_status",
 	"snooze_reminder",
 	"write_todos",
-] as const satisfies readonly (MuseToolName | MuseSubagentToolName)[];
+] as const satisfies readonly (
+	| MuseToolName
+	| MuseSubagentToolName
+	| "get_goal"
+	| "create_goal"
+	| "update_goal"
+	| "report_progress"
+	| "cron_create"
+	| "cron_delete"
+	| "cron_list"
+)[];
 
 export const MUSE_READ_DEFAULT_LIMIT = 500;
 const DEFAULT_YIELD_MS = 10_000;

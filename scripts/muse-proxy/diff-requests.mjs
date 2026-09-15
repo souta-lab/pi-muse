@@ -228,8 +228,24 @@ function toolOrder(tools) {
 	return { flat, groups };
 }
 
-/** Average per-tool schema similarity; a tool missing on one side scores 0. */
-function perToolScore(toolDiff) {
+/**
+ * Average per-tool schema similarity over the tools present on BOTH sides.
+ *
+ * Tools that exist on only one side are not a per-tool schema failure — they
+ * are a coverage question, reported as their own category (see
+ * `toolCategories`). Averaging them in as zeros smears a missing tool's whole
+ * weight across the tools we do ship and understates shared-tool fidelity.
+ */
+function perToolScoreShared(toolDiff) {
+	const tools = (toolDiff?.tools ?? []).filter((tool) => tool.status === "both");
+	if (tools.length === 0) return 1;
+	let sum = 0;
+	for (const tool of tools) sum += tool.schemaSimilarity ?? 0;
+	return sum / tools.length;
+}
+
+/** Legacy union-inclusive average: a tool missing on one side scores 0. */
+function perToolScoreUnion(toolDiff) {
 	const tools = toolDiff?.tools ?? [];
 	if (tools.length === 0) return 1;
 	let sum = 0;
@@ -357,7 +373,47 @@ function compareTools(a, b) {
 		});
 	}
 	const sameSet = mapA.size === mapB.size && tools.every((tool) => tool.status === "both");
-	return { leftCount: mapA.size, rightCount: mapB.size, sameSet, tools, toolGaps: buildToolGaps(tools) };
+	const shared = tools.filter((tool) => tool.status === "both");
+	// Category-aware tool accounting. Left is muse, right is pi-muse, so:
+	//   shared        — present on both sides (per-tool fidelity here)
+	//   missingFromRight — muse sends it, pi-muse does not (own category)
+	//   extraOnRight  — pi-muse sends it, muse does not (own category)
+	const toolCategories = {
+		shared: {
+			count: shared.length,
+			names: shared.map((tool) => tool.name),
+			averageFidelity:
+				shared.length === 0
+					? 1
+					: shared.reduce((sum, tool) => sum + (tool.schemaSimilarity ?? 0), 0) / shared.length,
+			perTool: shared.map((tool) => ({
+				name: tool.name,
+				schemaSimilarity: tool.schemaSimilarity,
+				descriptionEqual: tool.description.equal,
+				strictEqual: tool.strict.equal,
+				additionalPropertiesEqual: tool.additionalProperties.equal,
+				propertiesEqual: tool.properties.equal,
+				requiredEqual: tool.required.equal,
+			})),
+		},
+		missingFromRight: {
+			count: tools.filter((tool) => tool.status === "left-only").length,
+			names: tools.filter((tool) => tool.status === "left-only").map((tool) => tool.name),
+		},
+		extraOnRight: {
+			count: tools.filter((tool) => tool.status === "right-only").length,
+			names: tools.filter((tool) => tool.status === "right-only").map((tool) => tool.name),
+		},
+		unionCount: tools.length,
+	};
+	return {
+		leftCount: mapA.size,
+		rightCount: mapB.size,
+		sameSet,
+		tools,
+		toolGaps: buildToolGaps(tools),
+		toolCategories,
+	};
 }
 
 /**
@@ -519,7 +575,8 @@ export function compareRequests(requestA, requestB, opts = {}) {
 	}
 
 	const tools = compareTools(normA, normB);
-	const toolScore = perToolScore(tools);
+	const toolScore = perToolScoreShared(tools);
+	const toolScoreUnion = perToolScoreUnion(tools);
 	let toolMatched = 0;
 	let toolTotal = 0;
 	for (const tool of tools.tools) {
@@ -680,6 +737,7 @@ export function compareRequests(requestA, requestB, opts = {}) {
 		score,
 		leafScore,
 		toolScore,
+		toolScoreUnion,
 		matchedLeaves: matched,
 		totalLeaves,
 		minFidelity,
@@ -689,6 +747,7 @@ export function compareRequests(requestA, requestB, opts = {}) {
 		differences,
 		structural,
 		tools,
+		toolCategories: tools.toolCategories,
 		toolGaps: tools.toolGaps,
 		toolOrder: toolOrderDiff,
 		textual,
@@ -700,7 +759,7 @@ export function compareRequests(requestA, requestB, opts = {}) {
 function formatReport(result, { labelA = "left", labelB = "right" } = {}) {
 	const lines = [];
 	lines.push(
-		`fidelity (weighted): ${(result.score * 100).toFixed(2)}%   strict-leaf: ${(result.leafScore * 100).toFixed(2)}%   tools(per-tool avg): ${(result.toolScore * 100).toFixed(2)}%`,
+		`fidelity (weighted): ${(result.score * 100).toFixed(2)}%   strict-leaf: ${(result.leafScore * 100).toFixed(2)}%   tools(per-tool avg, shared): ${(result.toolScore * 100).toFixed(2)}%   [union-inclusive: ${((result.toolScoreUnion ?? result.toolScore) * 100).toFixed(2)}%]`,
 	);
 	lines.push(
 		`threshold: ${(result.minFidelity * 100).toFixed(0)}%  core checks: ${result.corePass ? "pass" : "FAIL"}  verdict: ${result.pass ? "PASS" : "FAIL"}`,
@@ -710,7 +769,7 @@ function formatReport(result, { labelA = "left", labelB = "right" } = {}) {
 	for (const section of result.sections) {
 		const suffix =
 			section.name === "tools" && section.perToolScore !== undefined
-				? `   [gap-inclusive per-tool avg ${(section.perToolScore * 100).toFixed(2)}%]`
+				? `   [shared per-tool avg ${(section.perToolScore * 100).toFixed(2)}%; union-inclusive ${((result.toolScoreUnion ?? result.toolScore) * 100).toFixed(2)}%]`
 				: "";
 		lines.push(
 			`  ${section.name.padEnd(18)} ${(section.score * 100).toFixed(2).padStart(7)}%  (${section.matched}/${section.total})${suffix}`,
@@ -759,6 +818,32 @@ function formatReport(result, { labelA = "left", labelB = "right" } = {}) {
 		lines.push(`  ${tool.name}${flags.length === 0 ? ": identical" : `: ${flags.join("; ")}`}`);
 	}
 	lines.push("");
+	const categories = result.toolCategories;
+	if (categories) {
+		lines.push("tool categories:");
+		lines.push(
+			`  (a) on both sides: ${categories.shared.count}/${categories.unionCount} shared, per-tool avg ${(categories.shared.averageFidelity * 100).toFixed(2)}%`,
+		);
+		for (const tool of categories.shared.perTool) {
+			const dirty = [];
+			if (tool.schemaSimilarity < 1) dirty.push(`schema ${(tool.schemaSimilarity * 100).toFixed(0)}%`);
+			if (!tool.descriptionEqual) dirty.push("description");
+			if (!tool.strictEqual) dirty.push("strict");
+			if (!tool.additionalPropertiesEqual) dirty.push("additionalProperties");
+			if (!tool.propertiesEqual) dirty.push("properties");
+			if (!tool.requiredEqual) dirty.push("required");
+			lines.push(
+				`      ${tool.name}: ${(tool.schemaSimilarity * 100).toFixed(2)}%${dirty.length ? ` (${dirty.join(", ")} differ)` : ""}`,
+			);
+		}
+		lines.push(
+			`  (b) present in muse, missing in pi-muse (${categories.missingFromRight.count}/${categories.unionCount}): ${categories.missingFromRight.names.join(", ") || "(none)"}`,
+		);
+		lines.push(
+			`  (c) present in pi-muse, missing in muse (${categories.extraOnRight.count}): ${categories.extraOnRight.names.join(", ") || "(none)"}`,
+		);
+		lines.push("");
+	}
 	const descriptionFieldLines = [];
 	for (const tool of result.tools.tools) {
 		if (tool.status !== "both") continue;

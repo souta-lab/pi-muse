@@ -49,11 +49,10 @@ describe("muse tools", () => {
 		expect(Object.keys(definitions)).toEqual([...MUSE_TOOL_NAMES]);
 		expect(Object.values(definitions).map((definition) => definition.name)).toEqual([...MUSE_TOOL_NAMES]);
 
-		const captured = JSON.parse(
-			readFileSync(fileURLToPath(new URL("./fixtures/muse/REQUEST_SHAPE.json", import.meta.url)), "utf-8"),
-		) as { tools: Array<{ tools: Array<{ name: string }> }> };
-		const capturedOrder = captured.tools[0]!.tools.map((tool) => tool.name);
-		expect([...MUSE_ACTIVE_TOOL_NAMES]).toEqual(capturedOrder);
+		const liveOrder = JSON.parse(
+			readFileSync(fileURLToPath(new URL("../../../scripts/muse-proxy/fixtures/tool-names-live.json", import.meta.url)), "utf-8"),
+		) as string[];
+		expect([...MUSE_ACTIVE_TOOL_NAMES]).toEqual(liveOrder);
 		expect(MUSE_ACTIVE_TOOL_NAMES.filter((name) => (MUSE_TOOL_NAMES as readonly string[]).includes(name))).toEqual([
 			...MUSE_TOOL_NAMES,
 		]);
