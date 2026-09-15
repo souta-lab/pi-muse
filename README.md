@@ -52,15 +52,27 @@ Two deliberate deviations:
 
 ### Fidelity at a glance
 
-These are estimates, not measured values.
+Measured against the captured Muse Code 1.2.1 request (see `SYSTEM_PROMPT.runtime.md`
+and `TOOLS.json` in the mirror repository), not estimated by hand.
 
-| Scope | Fidelity |
-|---|---|
-| Model-visible surface (system prompt + tool schemas) | ~95% |
-| Tool behavior (result wording, errors, flag surface) | ~90% |
-| Per-session context injection | ~90% |
-| End-to-end harness behavior (approvals, sandbox, event log/resume, reminders, multi-agent) | ~15% |
-| **Overall** | **~70%** |
+| Dimension | Measured | Fidelity |
+|---|---|---|
+| System prompt text | 40,320 / 40,445 chars; 101 / 113 lines identical | 97% |
+| Tool schemas (names, argument names, `required`) | 14 / 14 exact | 100% |
+| Tool descriptions (text the model reads) | 1,896 / 4,414 chars | **43%** |
+| Tool coverage | 19 / 22 (`read_file`…`write_todos` + 5 `subagent_*`) | 86% |
+| Per-session context (Muse's `developer` message) | 1,385 / 19,340 chars | **7%** |
+| Request parameters (`store`, cache key, reasoning effort/summary, `include`) | 5 / 6 match; `max_output_tokens` differs; tools are flat, not one namespace | 75% |
+| Tool behavior (result wording, errors, flags) | per-tool tests + differential run | 90% |
+| **Model-visible surface** | weighted over prompt, schemas, descriptions, coverage, context | **~65%** |
+| Harness (approvals, sandbox, event log/resume, reminders, notifications) | not implemented | ~10% |
+| **Overall** | | **~55%** |
+
+The two largest gaps are the **tool descriptions** (most are summarized rather than
+copied; `bash` is 14% of the official text) and the **per-session context**: Muse's
+`developer` message carries `workflow-choice`, `workflow-cookbook`, and a catalog of
+18 bundled/plugin skills, while pi-muse injects only workspace identity plus the
+subagent-delegation posture, and lists skills only when Pi skills are installed.
 
 ## Testing fidelity
 
