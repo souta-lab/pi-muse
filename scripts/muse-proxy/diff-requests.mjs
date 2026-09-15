@@ -15,6 +15,17 @@
  *   - workspace root / `cwd`      environment-specific path, replaced with <cwd>.
  *   - home directory              replaced with <home>.
  *   - UUIDs and generated id runs replaced with <uuid> / <id>.
+ *   - `Current session id:` value inside the `session-identity` reminder:
+ *                                 per-process identity, a fresh UUID per session.
+ *   - `Current session log:` value inside the `session-identity` reminder:
+ *                                 per-process path into each client's own session
+ *                                 store (muse XDG data dir vs pi-agent dir).
+ *   - timestamped session-file paths (`<dir>/sessions/…/<timestamp>_<uuid>.jsonl`):
+ *                                 the filename embeds a per-run timestamp.
+ *                                 Everything else in the `session-identity`
+ *                                 reminder (e.g. the "Usual session log pattern"
+ *                                 line and the never-probe-~/.claude paragraph)
+ *                                 is still compared verbatim.
  *   - volatile headers            authorization, cookies, x-opencode-session,
  *                                 traceparent, content-length, host and
  *                                 user-agent (the two clients are different
@@ -34,6 +45,19 @@ const TIMESTAMP_KEYS = /^(timestamp|created_at|updated_at|recorded_at|expires_at
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const GENERATED_ID_RE = /\b(msg|resp|fc|call|item|run|turn|ses|req|evt|rs)_[A-Za-z0-9-]{6,}\b/g;
 const ULID_RE = /\b01[a-z0-9]{20,}\b/g;
+// Session identity: the `session-identity` system reminder quotes the live
+// session id and the log path that session writes to. Both values are
+// per-process (fresh UUID; each client's own session store), so only the two
+// values are blanked — every other byte of the reminder stays compared.
+const SESSION_IDENTITY_BLOCK_RE = /<system-reminder source="session-identity">[\s\S]*?<\/system-reminder>/g;
+const SESSION_ID_LINE_RE = /^([ \t]*Current session id:[ \t]*).*$/m;
+const SESSION_LOG_LINE_RE = /^([ \t]*Current session log:[ \t]*).*$/m;
+// A session file quoted outside the reminder: `<dir>/sessions/…/<timestamp>_<uuid>.jsonl`.
+// The timestamped filename is what makes the path per-run, so the whole path is
+// blanked; a `/sessions/` path without that generated filename (e.g. the static
+// "Usual session log pattern" line) does not match and stays compared.
+const SESSION_LOG_FILE_RE =
+	/(?:\/[A-Za-z0-9._+-]+)*\/sessions\/(?:[A-Za-z0-9._+-]+\/)*\d{4}-\d{2}-\d{2}T[\d:.+-]*Z_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.jsonl/gi;
 const VOLATILE_HEADERS = new Set([
 	"authorization",
 	"cookie",
@@ -61,10 +85,23 @@ export function normalizeString(input, cwdPaths = []) {
 		out = out.replace(new RegExp(escapeRegExp(cwd), "g"), "<cwd>");
 	}
 	out = out.replace(/\/home\/[^/\\"\s]+/g, "<home>");
+	out = normalizeSessionIdentity(out);
+	out = out.replace(SESSION_LOG_FILE_RE, "<session-log-file>");
 	out = out.replace(UUID_RE, "<uuid>");
 	out = out.replace(ULID_RE, "<id>");
 	out = out.replace(GENERATED_ID_RE, "$1_<id>");
 	return out;
+}
+
+/**
+ * Blank the two per-process values inside every `session-identity` reminder.
+ * Runs before UUID_RE so the log line is replaced whole (path included), not
+ * just its trailing UUID; the reminder's other lines are left untouched.
+ */
+function normalizeSessionIdentity(text) {
+	return text.replace(SESSION_IDENTITY_BLOCK_RE, (block) =>
+		block.replace(SESSION_ID_LINE_RE, "$1<session-id>").replace(SESSION_LOG_LINE_RE, "$1<session-log>"),
+	);
 }
 
 function escapeRegExp(value) {

@@ -82,12 +82,13 @@ describe("pi-muse CLI defaults", () => {
 		expect(opencodeGo?.id).toBe("muse-spark-1.3-contributor");
 		expect(opencodeGo?.api).toBe("openai-responses");
 
-		// Muse Code sends max_output_tokens 32768; both provider specs must match.
+		// The model catalog caps output at 128k for the muse provider and 131k for
+		// opencode-go, which is what each provider sends as max_output_tokens.
 		expect([
 			model?.maxTokens,
 			services.modelRuntime.getModel("muse", "muse-spark-1.2-contributor")?.maxTokens,
 			opencodeGo?.maxTokens,
 			services.modelRuntime.getModel("opencode-go", "muse-spark-1.2-contributor")?.maxTokens,
-		]).toEqual([32_768, 32_768, 32_768, 32_768]);
+		]).toEqual([128_000, 128_000, 131_072, 131_072]);
 	});
 });

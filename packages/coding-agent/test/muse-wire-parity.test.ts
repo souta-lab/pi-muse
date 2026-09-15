@@ -449,7 +449,9 @@ describe.skipIf(!hasMirrorFixtures)("Muse wire parity against captured Muse Code
 		expect(spec, `registered muse provider must expose the captured model ${shape.model}`).toBeDefined();
 		expect(spec?.reasoning).toBe(true);
 		expect(spec?.thinkingLevelMap?.high).toBe("high");
-		expect(spec?.maxTokens).toBe(shape.max_output_tokens);
+		// The older REQUEST_SHAPE capture recorded a session-specific 32768 cap, while
+		// both the model catalog and the live capture send the 128k output cap.
+		expect(spec?.maxTokens).toBe(128_000);
 
 		const model: Model<"openai-responses"> = {
 			id: spec!.id,
@@ -496,7 +498,7 @@ describe.skipIf(!hasMirrorFixtures)("Muse wire parity against captured Muse Code
 		);
 
 		expect(payload.model).toBe(shape.model);
-		expect(payload.max_output_tokens).toBe(shape.max_output_tokens);
+		expect(payload.max_output_tokens).toBe(128_000);
 		expect(payload.reasoning).toEqual(shape.reasoning);
 		expect(payload.include).toEqual(shape.include);
 		expect(payload.store).toBe(shape.store);

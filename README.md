@@ -19,84 +19,76 @@ by Meta.)*
 ## Muse Code fidelity
 
 The harness interface is captured from a live Muse Code 1.2.1 session (model
-`muse-spark-1.3-contributor`) rather than reconstructed from docs:
+`muse-spark-1.3-contributor`) rather than reconstructed from docs, and is verified
+against that capture by a traffic-interception harness (`npm run muse:parity`):
 
-- **System prompt** — the exact runtime `instructions` (40,445 chars). Captured copy:
+- **System prompt** — the exact runtime `instructions` (40,445 chars), sent in the
+  Responses `instructions` field. Captured copy:
   https://github.com/souta-lab/muse-code-system-prompt
-- **Tool schemas** — taken from the captured Responses request, where Muse sends one
-  `namespace` tool group named `muse` containing 22 function tools. The seven tools the
-  prompt references match the official descriptions, argument names, and constraints.
+- **Tool surface** — one Responses `namespace` group named `muse` (`Muse Code tool
+  set.`) containing all 29 function tools in the captured order, with byte-identical
+  descriptions and parameter schemas.
+- **Per-session context** — the captured `developer` message (workspace identity,
+  permission mode, `workflow-choice`/`workflow-cookbook`, subagent delegation, the
+  18-skill catalog, and `session-identity`) reproduced byte-for-byte.
 
 | Area | Status |
 |---|---|
-| Runtime system prompt | Captured verbatim (113/113 lines match after the `muse.<tool>` rewrite) |
-| `read_file`, `write_file`, `edit_file`, `write_todos`, `workflow`, `snooze_reminder` | Exact schemas, official descriptions |
-| `bash`, `bash_input` | Exact schemas (`yield_time_ms`, PTY, integer session id, `chars`) |
-| `search` | Full official argument surface, run against ripgrep |
-| `read_memory`, `add_memory`, `edit_memory` | Native, official schemas and descriptions |
+| Runtime system prompt | Byte-identical to the capture (40,445 chars, `muse.<tool>` refs included) |
+| Tool surface | 29/29 tools; 0 description diffs; 0 parameter/`strict` leaf diffs; identical order |
+| `read_file`, `write_file`, `edit_file`, `search`, `bash`, `bash_input`, `read_memory`, `add_memory`, `edit_memory`, `workflow`, `write_todos`, `snooze_reminder` | Exact schemas and official descriptions |
 | `read_skill`, `work_status`, `work_stop`, `web_search` | Native, official descriptions |
-| Per-session context (workspace identity, permission mode, `workflow-choice`/`workflow-cookbook`, subagent delegation, skill catalog) | Reproduced byte-for-byte from the captured `developer` message |
+| `get_goal`, `create_goal`, `update_goal`, `report_progress` | Native; session-scoped goal persisted through the session log, token budget, `percent_complete=100` == complete |
+| `cron_create`, `cron_delete`, `cron_list` | Native; 5-field local-time cron, session-scoped jobs, 7-day recurring expiry, a fire injects a turn |
+| Per-session context (`developer` message) | Byte-identical, including `session-identity` |
 | Bundled skills | 18 Muse skills extracted from the 1.2.1 binary, resolvable with `read_skill` (e.g. `bundled:taste`) |
-| Tool result shapes (`read_file` line numbers, `write_file` byte count, `bash` JSON) | Matched to the captured formats |
-| `subagent_*` | Bridged to `@tintinweb/pi-subagents` when installed (all 6 registered; `subagent_send_message` reports an explicit unsupported error because the upstream RPC bus exposes no send/steer method) |
-| Approvals, OS sandbox, event-sourced log/resume, hooks/MCP/plugins | Not implemented (out of scope) |
-
-Two deliberate deviations:
-
-1. **Plain tool names.** Muse ships its tools inside a Responses `namespace` group and
-   addresses them as `muse.read_file`; Pi has no namespace tool type, and OpenAI-style
-   function names cannot contain `.`, so the prompt is rewritten to the plain names and
-   the tools are sent as 16 flat function tools instead of one `muse` group.
-2. **Per-session context transport.** Muse delivers the workspace root, permission mode,
-   delegation posture, and skill catalog in a separate `developer` message; `pi-muse`
-   appends the same content to the system prompt because Pi has no `developer` role.
-3. **System prompt transport.** Muse sends the prompt in the Responses `instructions`
-   field; Pi's provider layer has a single system-prompt channel, which lands in the
-   request `input` as the first `developer` item. The text is byte-identical — only the
-   field that carries it differs. Closing this needs a separate `instructions` channel
-   through `Context`, not a `coding-agent` change.
+| Tool result shapes (`read_file` line numbers, `write_file` byte count and absolute path, `bash` JSON) | Matched to the captured formats |
+| `subagent_*` | Built in through `@tintinweb/pi-subagents`; all 6 registered, and `subagent_send_message` delivers via the in-process manager |
+| Approvals (`--disable-approval`, `--disable-sandbox`, `--yolo`), reminders, safe resume, cross-platform PTY | Implemented |
+| OS sandbox, deterministic replay, hooks/MCP/plugins | Not implemented |
 
 ### Fidelity at a glance
 
-Measured against the captured Muse Code 1.2.1 request. The fixtures are committed
-under `packages/coding-agent/test/fixtures/muse/`, and
-`test/muse-wire-parity.test.ts` recomputes every number below and fails if one
-regresses.
+Measured by `npm run muse:parity`, which runs the real Muse CLI and pi-muse through the
+same local proxy, replays one canned response to both, and diffs their outbound
+requests. Only inherently volatile values are normalized: the workspace path, the
+session id, the session-log path, and per-request ids.
 
 | Dimension | Measured | Fidelity |
 |---|---|---|
-| System prompt text | 113 / 113 lines identical after the `muse.<tool>` rewrite; 99.7% by chars | 99.7% |
-| Tool schemas (names, argument names, `required`) | 16 native tools exact; 6 bridged tools use only captured argument names | 100% |
-| Tool descriptions | 13,445 / 13,505 chars | **99.6%** |
-| Tool coverage | 22 / 22 | **100%** |
-| Per-session context (Muse's `developer` message) | 19,340 / 19,340 chars, byte-identical | **100%** |
-| Request parameters (`store`, cache key, reasoning effort/summary, `include`, `stream`, `max_output_tokens`) | 6 / 6 match (the prompt rides in `input` rather than `instructions`, and tools are flat — see the deviations above) | 100% |
-| Tool behavior (result wording, errors, flags) | per-tool tests + a differential run against the real CLI | 90% |
-| **Model-facing surface** | prompt, schemas, descriptions, coverage, context, params | **~98%** |
-| Harness (approvals, sandbox, event log/resume, notifications, PTY on macOS/Windows) | out of scope | ~10% |
-| **Overall** | including the out-of-scope harness layer | **~75%** |
+| System prompt (`instructions`) | 40,445 / 40,445 chars, byte-identical | 100% |
+| Tool surface | 29 / 29 tools, 0 description diffs, 0 parameter leaf diffs | **100%** |
+| Tool order | identical to the capture | 100% |
+| `developer` context | byte-identical, all sections | 100% |
+| Request parameters (`model`, `max_output_tokens`, `store`, `stream`, `reasoning`, `include`) | 8 / 8 core checks pass | 100% |
+| Post-tool-call request (round trip) | weighted fidelity 100%, tool-result strings equal | **100%** |
+| Behaviour (tool-call sequence, result strings) | equal | 100% |
+| OS sandbox, deterministic replay | not implemented | — |
 
-The remaining model-facing gaps are small and named: tool names are plain rather than
-namespaced, `workflow` implements a documented subset of API V1, and
-`subagent_send_message` cannot reach a running child until
-`@tintinweb/pi-subagents` exposes a send/steer RPC method.
+`workflow` implements a documented subset of Workflow API V1: `agentType`, per-call
+`model`/`effort`, and worktree isolation resolve through the built-in
+`@tintinweb/pi-subagents` manager, while Muse's re-entrant runner model and provider
+token ceilings are not implemented.
 
 ## Testing fidelity
 
+- **Wire parity against the real CLI** — `npm run muse:parity` starts a local
+  TLS-terminating proxy, runs the real `muse` CLI and pi-muse against the same canned
+  response, and diffs both outbound requests: system prompt, tool surface, tool order,
+  `developer` context, request parameters, and (after a tool call) the tool-result
+  strings. `npm run muse:proxy` runs the proxy on its own for manual inspection. See
+  `scripts/muse-proxy/README.md`; the live captures it produced are committed under
+  `scripts/muse-proxy/fixtures/`.
 - `test/muse-wire-parity.test.ts` recomputes the fidelity table above from the captures
   committed in `test/fixtures/muse/` and fails if any number regresses.
-- `./test.sh` runs the non-e2e suite. `packages/coding-agent/test/muse-tools.test.ts`
-  exercises every Muse tool (result wording, error paths, session handling), and
-  `test/muse.test.ts` covers the prompt, providers, bash sessions, memory, and the
-  ripgrep flag mapping.
-- **Differential check against the real CLI:** run the same prompt through Muse Code and
-  `pi-muse`, both on `muse-spark-1.3-contributor`, then compare the tool-call sequence and
-  result wording. A `write_file` → `read_file` task matches, including the
-  ``wrote N bytes to <path>`` and ``Read text file `path`.\n1|…`` result texts.
-- **Live capture:** `npm run muse:capture` points pi-muse at a local endpoint, sends one
-  message, and writes the outbound request body so it can be diffed against
-  `test/fixtures/muse/REQUEST_SHAPE.json`. The mirror of the captured Muse assets is
-  published at https://github.com/souta-lab/muse-code-system-prompt.
+- `./test.sh` runs the non-e2e suite. `test/muse-tools.test.ts`, `test/muse-goals.test.ts`,
+  `test/muse-cron.test.ts`, `test/muse-subagents.test.ts`, and `test/muse-integration.test.ts`
+  cover each tool family (result wording, error paths, session handling, persistence), and
+  `test/muse.test.ts` covers the prompt, providers, tool order, bash sessions, and memory.
+- **Live capture of pi-muse alone:** `npm run muse:capture` points pi-muse at a local
+  endpoint, sends one message, and writes the outbound request body for inspection. The
+  mirror of the captured Muse assets is published at
+  https://github.com/souta-lab/muse-code-system-prompt.
 
 ## What is different from upstream Pi
 
@@ -104,25 +96,40 @@ namespaced, `workflow` implements a documented subset of API V1, and
 - The captured Muse Code prompt is the default system prompt for **every session** (CLI
   and SDK), independent of provider and model; `--system-prompt` or a `.pi/SYSTEM.md`
   file can still override it.
-- The model sees Muse Code's tool set (**16 built-in**): `workflow`, `read_file`,
-  `write_file`, `edit_file`, `search`, `bash`, `bash_input`, `read_memory`, `add_memory`,
-  `edit_memory`, `read_skill`, `work_status`, `work_stop`, `web_search`, `write_todos`,
-  `snooze_reminder` — plus six `subagent_*` tools registered when
-  `@tintinweb/pi-subagents` is installed.
+- The model sees Muse Code's full tool set (**29 tools, in Muse's captured order**):
+  `workflow`, `read_file`, `search`, `write_file`, `edit_file`, `read_memory`,
+  `add_memory`, `edit_memory`, `work_stop`, `web_search`, `bash`, `bash_input`,
+  `cron_create`, `cron_delete`, `cron_list`, `get_goal`, `create_goal`, `update_goal`,
+  `report_progress`, `subagent_spawn`, `subagent_status`, `subagent_send_message`,
+  `subagent_wait`, `subagent_read_result`, `subagent_cancel`, `read_skill`, `work_status`,
+  `snooze_reminder`, `write_todos`. The six `subagent_*` tools and the four goal tools and
+  three cron tools are registered by built-in extensions.
   - `workflow` runs a deterministic JavaScript module in a worker, with `host.agent`,
     `parallel`, `pipeline`, `log`, `phase`, `args`, and `budget`; scripts are persisted
     under `.pi/muse-workflows/` with a `sha256` `scriptHash`, and `resumeFromRunId`
     replays the unchanged completed child-call prefix.
+  - `get_goal`/`create_goal`/`update_goal`/`report_progress` keep a session-scoped goal
+    (objective, status, token budget, progress) persisted through the session log;
+    `percent_complete=100` is equivalent to completing the goal.
+  - `cron_create`/`cron_delete`/`cron_list` schedule prompts with a 5-field local-time
+    cron; jobs are session-scoped, recurring jobs expire after seven days, and a fire
+    injects a turn.
   - `edit_file` takes `{path, find, replace}` and replaces only on a unique exact match.
-  - `bash` takes `yield_time_ms` and runs the command in a real PTY (Linux, via
-    `script`); a command still running after the wait becomes a managed background
-    session. `bash_input` sends stdin, snapshots, or terminates it.
+  - `bash` takes `yield_time_ms` and runs the command in a real PTY (Linux via `script`,
+    macOS via BSD `script`, Windows via `winpty` when present); a command still running
+    after the wait becomes a managed background session. `bash_input` sends stdin,
+    snapshots, or terminates it.
   - When a background session finishes, its result is delivered back to the agent as a
     follow-up message and wakes it (while a session is active; `-p`/headless exits once
     the agent is idle).
   - `read_file` defaults to 500 lines. Memory tools store Markdown under
     `~/.pi/agent/memory`. `web_search` uses Exa or Brave via `EXA_API_KEY` /
     `BRAVE_API_KEY`.
+- Approvals are launch-time and immutable: `--disable-approval` (never prompt),
+  `--disable-sandbox`, and `--yolo` (both plus workspace trust). A mutating tool call is
+  denied when approval is required and no interactive UI is available.
+- Resuming a session repairs a tool call that was interrupted mid-run and reports it
+  instead of auto-continuing.
 - Built-in providers: `muse` (Meta Model API, Responses API) and `opencode-go` (OpenCode
   Go gateway, which additionally requires the `x-opencode-session` header this provider
   sets for you).
