@@ -50,7 +50,10 @@ describe("muse tools", () => {
 		expect(Object.values(definitions).map((definition) => definition.name)).toEqual([...MUSE_TOOL_NAMES]);
 
 		const liveOrder = JSON.parse(
-			readFileSync(fileURLToPath(new URL("../../../scripts/muse-proxy/fixtures/tool-names-live.json", import.meta.url)), "utf-8"),
+			readFileSync(
+				fileURLToPath(new URL("../../../scripts/muse-proxy/fixtures/tool-names-live.json", import.meta.url)),
+				"utf-8",
+			),
 		) as string[];
 		expect([...MUSE_ACTIVE_TOOL_NAMES]).toEqual(liveOrder);
 		expect(MUSE_ACTIVE_TOOL_NAMES.filter((name) => (MUSE_TOOL_NAMES as readonly string[]).includes(name))).toEqual([
