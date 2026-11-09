@@ -6,6 +6,10 @@
 
 - Enabled native deferred tool loading for Fireworks Messages models. Use `ToolSearch` or `tool_search` as the loader name for prompt-prefix deferral ([#9323](https://github.com/earendil-works/pi/issues/9323)).
 
+### Changed
+
+- Pinned the generated model catalog data (`src/providers/data/`) in git. Builds now consume the committed snapshot instead of regenerating from live provider APIs, so a fresh checkout builds reproducibly. Refresh the snapshot explicitly with `npm run hydrate:model-data` (data only) or `npm run generate:models` from the repository root (full regeneration), then commit the result.
+
 ### Fixed
 
 - Added `RetryPolicy.maxAgentDelayMs` support to cap shared assistant retry backoff for summarization calls ([#8826](https://github.com/earendil-works/pi/issues/8826)).
